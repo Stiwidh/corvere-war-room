@@ -193,7 +193,7 @@ const Pulpos = (() => {
       L.accion = s.lead?.last || '';
       L.vivo = (now - (s.lead?.lastAt || 0)) < WORKING;
       // lo que antes llevaba la tarjeta y hacía falta de un vistazo
-      L.rama = s.branch || ''; L.equipo = s.hasTeam; L.git = s.git;
+      L.rama = s.branch || ''; L.equipo = s.hasTeam; L.git = s.git; L.nombre = s.nombre || '';
       L.doc = s.doc; L.colgando = s.colgando || 0;
       L.acts = s.acts; L.toks = s.toks; L.up = s.up; L.lat = s.lat;
       L.desde = s.startedAt;
@@ -534,7 +534,8 @@ const Pulpos = (() => {
       const z = L.zona;
       const sitio = z ? (z.cy + z.ry) - (L.y + L.r) : 999;
       const dosLineas = sitio > 44;
-      const idTxt = L.id.slice(0,8) + (L.equipo ? ' · equipo' : '');
+      // el nombre que le puso Claude Code se lee mejor que ocho hexadecimales
+      const idTxt = (L.nombre || L.id.slice(0,8)) + (L.equipo ? ' · equipo' : '');
       ctx.font = '700 10px ui-monospace,monospace';
       const w1 = ctx.measureText(est).width;
       ctx.font = '9px ui-monospace,monospace';

@@ -73,7 +73,7 @@ function render() {
   const olvidada = s.filter((x) => x.status === 'waiting').sort((a, b) => b.idle - a.idle)[0];
 
   $('kpis').innerHTML = `
-    ${state.aviso ? `<div class="kpi warn" title="${state.aviso}"><span class="lab">Plataforma</span><span class="val" style="font-size:13px">sin detección de sesiones vivas</span></div>` : ''}
+    ${state.aviso ? `<div class="kpi warn" title="${state.aviso}"><span class="lab">Ojo</span><span class="val" style="font-size:13px">${state.avisoCorto || 'detección parcial'}</span></div>` : ''}
     <div class="kpi"><span class="lab">Trabajando</span><span class="val">${working}</span></div>
     ${conAgentes ? `<div class="kpi"><span class="lab">Agentes al lío</span><span class="val" style="color:var(--accent-soft)">${conAgentes}</span></div>` : ''}
     <div class="kpi warn"><span class="lab">Te esperan</span><span class="val">${waiting}</span></div>

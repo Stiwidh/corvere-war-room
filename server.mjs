@@ -56,6 +56,8 @@ const TAIL_LEAD = 4 * 1024 * 1024;
 const TAIL_SUB = 512 * 1024;
 const MAX_AGE_H = 36;          // transcripts más viejos ni se miran
 const WORKING_S = 45;          // sin escribir más de esto ya no está "trabajando"
+// con la app de escritorio viva, hasta dónde se le concede la duda a una sesión
+const GRACIA_APP = 3 * 3600;
 const MSG_KEEP = 40;
 const ACT_KEEP = 18;
 
@@ -78,6 +80,8 @@ const heads = new Map();
 /** ruta de subagente -> misión deducida de su prompt inicial */
 const missions = new Map();
 let fleetError = null;
+/** Lo que el panel NO puede saber ahora mismo, dicho en la barra. */
+let avisoFuentes = null;
 
 const now = () => Date.now() / 1000;
 const AGENT_FILE = /^agent-a([A-Za-z][\w-]*?)-[0-9a-f]{12,}$/;
@@ -288,27 +292,90 @@ async function leerState(cwd) {
 /* ─────────────────────────── procesos vivos ─────────────────────────── */
 
 /**
- * Saber si una sesión sigue abierta obliga a mirar los procesos del sistema: el
- * transcript de una sesión cerrada y el de una que lleva dos horas esperándote
- * son idénticos, en los dos casos el último apunte es viejo.
+ * ¿Qué sesiones siguen abiertas?
  *
- * En Linux ese dato sale de `/proc`. Fuera de Linux no hay equivalente sin
- * arrastrar dependencias: en macOS haría falta `ps` más `lsof`, y en Windows el
- * directorio de trabajo de otro proceso no lo expone ninguna API pública (hay
- * que leer el PEB del proceso). Así que ahí se degrada a "no lo sé", que se
- * anuncia en pantalla, en vez de dar por cerradas todas las sesiones, que es
- * mentira y encima silenciosa.
+ * El transcript no lo dice: el de una sesión cerrada y el de una que lleva dos
+ * horas esperándote son idénticos, en los dos casos el último apunte es viejo.
+ * Hay que mirar fuera, y ninguna fuente sirve para todos los casos:
+ *
+ *  1. `claude agents --json` es la mejor cuando existe. Da el sessionId exacto,
+ *     el nombre legible de la sesión y su estado, y funciona en las tres
+ *     plataformas. Pero SOLO ve sesiones del CLI: medido contra la app de
+ *     escritorio en Windows, con la app abierta y seis sesiones vivas, devuelve
+ *     una lista vacía.
+ *  2. La app de escritorio no abre un proceso por sesión, sino una sola
+ *     aplicación con una docena de procesos y ningún directorio de trabajo por
+ *     sesión, y no deja en disco ningún registro de lo que está activo
+ *     (`sessions/` y `session-env/<uuid>/` están vacíos). Así que de ella solo
+ *     se puede saber una cosa, que además es la que importa: si está corriendo.
+ *     Mientras lo esté, ninguna de sus sesiones puede darse por cerrada.
+ *  3. `/proc` en Linux, que es lo que había antes y sigue siendo el respaldo
+ *     cuando el CLI es viejo y no tiene el subcomando `agents`.
  */
-const DETECCION = process.platform === 'linux';
-const AVISO_PLATAFORMA = DETECCION ? null
-  : `Sin detección de sesiones vivas en ${process.platform}: no distingo una sesión `
-    + 'cerrada de una que te espera, así que ninguna aparece como cerrada. '
-    + 'En Linux, o dentro de WSL, sí.';
+const HAY_PROC = process.platform === 'linux';
+
+const ejecutar = (cmd, args, ms = 5000) => new Promise((listo) => {
+  /* Dos cuidados, los dos aprendidos en un Windows de verdad:
+     - un `.cmd` solo se puede lanzar a través del shell. Desde la corrección de
+       CVE-2024-27980 Node se niega, y el `spawn EINVAL` que suelta NO llega por
+       el callback sino como excepción, así que sin el try/catch se lleva por
+       delante el barrido entero y el panel se queda en cero sesiones.
+     - los argumentos aquí son constantes del propio código, nunca entrada
+       ajena, que es lo que hace inofensivo el `shell`. */
+  const porShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(cmd);
+  try {
+    execFile(cmd, args, { timeout: ms, windowsHide: true, maxBuffer: 2 << 20, shell: porShell },
+      (err, salida) => listo(err ? null : salida));
+  } catch { listo(null); }
+});
+
+/* El CLI se consulta cada pocos segundos, no en cada barrido: es lanzar un
+   proceso. Si no está instalado se deja de intentar durante un rato, por si
+   aparece luego. */
+let cacheCli = { t: 0, datos: null, falloHasta: 0 };
+
+async function sesionesDelCli() {
+  if (now() - cacheCli.t < 5) return cacheCli.datos;
+  if (now() < cacheCli.falloHasta) return null;
+  const binarios = process.platform === 'win32' ? ['claude.cmd', 'claude'] : ['claude'];
+  for (const bin of binarios) {
+    const salida = await ejecutar(bin, ['agents', '--json'], 8000);
+    if (salida == null) continue;
+    try {
+      const lista = JSON.parse(salida);
+      if (!Array.isArray(lista)) continue;
+      const porId = new Map();
+      for (const a of lista) if (a?.sessionId) porId.set(a.sessionId, a);
+      cacheCli = { t: now(), datos: porId, falloHasta: 0 };
+      return porId;
+    } catch { /* salida que no era JSON */ }
+  }
+  cacheCli = { t: now(), datos: null, falloHasta: now() + 120 };
+  return null;
+}
+
+/** ¿Corre la app de escritorio? Lo único observable de ella, y basta. */
+let cacheApp = { t: 0, v: false };
+async function appEscritorio() {
+  if (now() - cacheApp.t < 10) return cacheApp.v;
+  let viva = false;
+  if (process.platform === 'win32') {
+    const s = await ejecutar('tasklist', ['/fi', 'imagename eq Claude.exe', '/nh']);
+    viva = !!s && /Claude\.exe/i.test(s);
+  } else if (process.platform === 'darwin') {
+    viva = !!(await ejecutar('pgrep', ['-x', 'Claude']));
+  } else {
+    // en Linux la app va aparte del CLI, que también se llama claude
+    viva = !!(await ejecutar('pgrep', ['-f', 'claude-desktop']));
+  }
+  cacheApp = { t: now(), v: viva };
+  return viva;
+}
 
 /** Sesiones abiertas = procesos `claude` vivos. Su cwd dice a qué proyecto van. */
 async function liveCwds() {
   const out = new Map();   // cwd -> nº de procesos
-  if (!DETECCION) return out;
+  if (!HAY_PROC) return out;
   let pids;
   try { pids = await fsp.readdir('/proc'); } catch { return out; }
   await Promise.all(pids.map(async (pid) => {
@@ -526,7 +593,30 @@ async function scan() {
   }));
 
   const live = await liveCwds();
+  // ninguna de estas dos puede tumbar el barrido: si fallan, se sigue sin ellas
+  const cli = await sesionesDelCli().catch(() => null);   // Map sessionId -> info
+  const appViva = await appEscritorio().catch(() => false);
   const claimed = new Map();  // cwd -> cuántas sesiones ya marcamos abiertas
+
+  /* Con la app de escritorio viva SIEMPRE hay algo que advertir, haya o no otra
+     fuente: el CLI no ve sus sesiones y devuelve una lista vacía, así que fiarse
+     de esa lista para darlas por muertas es justo el error a evitar. */
+  const otraFuente = HAY_PROC || !!cli;
+  avisoFuentes =
+    appViva
+      ? otraFuente
+        ? { corto: 'sesiones de la app',
+            largo: 'La app de escritorio está abierta: de sus sesiones no se sabe cuáles '
+              + 'siguen vivas, así que las que lleven horas calladas pueden aparecer como '
+              + 'cerradas. Las de terminal sí son exactas.' }
+        : { corto: 'nada se da por cerrado',
+            largo: 'La app de escritorio está abierta y no publica cuáles de sus sesiones '
+              + 'siguen activas, y aquí no hay otra fuente: mientras corra, ninguna se '
+              + 'marca como cerrada.' }
+      : otraFuente ? null
+      : { corto: 'sin detección de sesiones',
+          largo: `Sin forma de saber qué sesiones siguen abiertas en ${process.platform}: `
+            + 'instala el CLI de Claude Code, o ejecuta el panel dentro de WSL.' };
 
   const ordered = [...best.entries()].sort((a, b) => b[1].mtime - a[1].mtime);
   const seen = new Set();
@@ -577,14 +667,32 @@ async function scan() {
     const idleAgentes = ahora - actAgentes;
     const idle = Math.min(idleLider, actAgentes ? idleAgentes : Infinity);
 
+    /* Abierta si alguna fuente fiable la ve. El CLI da certeza por sessionId;
+       /proc solo sabe de cwd, así que reparte: dos sesiones en el mismo
+       directorio y un único proceso significa que una de las dos ya no está. */
+    const delCli = cli?.get(s.id) || null;
+    if (delCli?.name) s.nombre = delCli.name;
+
     const procsHere = live.get(s.cwd) || 0;
     const used = claimed.get(s.cwd) || 0;
-    const open = used < procsHere;
-    if (open) claimed.set(s.cwd, used + 1);
+    const porProceso = used < procsHere;
+    if (porProceso) claimed.set(s.cwd, used + 1);
+    const abierta = !!delCli || porProceso;
 
-    // sin detección de procesos, "cerrada" no se puede afirmar: se deja el
-    // estado que dicte el transcript y el aviso lo explica en la barra
-    if (!open && DETECCION) s.status = 'closed';
+    /* Y "cerrada" solo se puede AFIRMAR si teníamos forma de verlo.
+       Donde hay /proc se afirma siempre: da certeza sobre las sesiones de
+       terminal, que son la mayoría, y renunciar a ella porque la app de
+       escritorio esté abierta en otra ventana resucita sesiones muertas de hace
+       días. Fuera de Linux no hay esa certeza y manda la app... pero con un
+       límite: que su proceso exista no significa que la estés usando, porque
+       Electron deja residentes cuando cierras la ventana (medido: 11 h de
+       proceso vivo sin ventana a la vista). Así que la duda solo protege a las
+       sesiones que han escrito hace poco; una que lleva medio día muda está
+       muerta aunque la app siga en memoria. */
+    const dudaApp = appViva && (ahora - actLider) < GRACIA_APP;
+    const podemosDescartar = HAY_PROC || (!!cli && !dudaApp);
+
+    if (!abierta && podemosDescartar) s.status = 'closed';
     else if (idleLider < WORKING_S) s.status = 'working';
     // el líder callado pero los agentes vivos: tú estás libre, no te reclama
     else if (actAgentes && idleAgentes < WORKING_S) s.status = 'agents';
@@ -960,7 +1068,7 @@ function snapshot() {
       return (rank[a.status] - rank[b.status]) || (b.lastActivity - a.lastActivity);
     })
     .map((s) => ({
-      id: s.id, project: s.project, cwd: s.cwd, branch: s.branch,
+      id: s.id, nombre: s.nombre || '', project: s.project, cwd: s.cwd, branch: s.branch,
       status: s.status, idle: Math.round(s.idle || 0),
       idleLider: Math.round(s.idleLider || 0),
       acts: s.acts, up: s.up, lat: s.lat, toks: s.toks,
@@ -982,7 +1090,9 @@ function snapshot() {
         retired: a.retired, recent: a.recent.slice(0, ACT_KEEP),
       })),
     }));
-  return { now: now(), error: fleetError, aviso: AVISO_PLATAFORMA, sessions: list };
+  return { now: now(), error: fleetError,
+           aviso: avisoFuentes?.largo || null, avisoCorto: avisoFuentes?.corto || null,
+           sessions: list };
 }
 
 /* ─────────────────────────── http ─────────────────────────── */

@@ -29,24 +29,43 @@ abriendo el puerto.
 
 ## Dónde funciona
 
+Leer transcripts funciona igual en los tres sistemas: viven en
+`~/.claude/projects/<proyecto>/<sesión>.jsonl` (en Windows,
+`%USERPROFILE%\.claude\`), con la misma estructura y los mismos
+`<sesión>/subagents/agent-*.jsonl`. **Verificado en un Windows 11 real contra la
+app de escritorio**, no deducido de la documentación.
+
+Lo que cambia de un sistema a otro es saber **cuáles siguen abiertas**, porque el
+transcript no lo dice: el de una sesión cerrada y el de una que lleva dos horas
+esperándote son idénticos, en los dos casos el último apunte es viejo. Para eso
+hay tres fuentes, y el panel usa la mejor que encuentre:
+
+| Fuente | Qué aporta | Dónde |
+|---|---|---|
+| `claude agents --json` | `sessionId` exacto, nombre legible de la sesión y su estado | Las tres, si el CLI está instalado |
+| `/proc` | Procesos `claude` vivos y su directorio de trabajo | Linux |
+| ¿Corre la app de escritorio? | Solo eso: si corre, sus sesiones no pueden darse por cerradas | Las tres |
+
 | Sistema | Estado |
 |---|---|
-| **Linux** | Completo. Es donde está desarrollado y probado |
-| **Windows con WSL2** | Completo, siempre que Claude Code corra **también dentro de WSL** (son kernels distintos: desde WSL no se ven los procesos de Windows) |
-| **macOS** | El panel funciona, pero **no distingue una sesión cerrada de una que te espera** |
-| **Windows nativo** | Igual que macOS: funciona sin esa distinción |
+| **Linux** | Completo. Es donde está desarrollado |
+| **Windows con la app de escritorio** | Lee todo; mientras la app esté abierta no marca nada como cerrado |
+| **Windows con el CLI** | Completo vía `claude agents` |
+| **Windows con WSL2** | Completo, si Claude Code corre **también dentro de WSL** (son kernels distintos: desde WSL no se ven los procesos de Windows) |
+| **macOS** | Como Windows: completo con el CLI instalado |
 
-El motivo es una sola función. Saber si una sesión sigue abierta obliga a mirar
-los procesos del sistema, porque el transcript de una sesión cerrada y el de una
-que lleva dos horas esperándote son idénticos: en los dos casos el último apunte
-es viejo. En Linux ese dato sale de `/proc`. Fuera de Linux no hay equivalente
-sin arrastrar dependencias, y en Windows el directorio de trabajo de otro proceso
-no lo expone ninguna API pública (hay que leer el PEB del proceso).
+### Por qué la app de escritorio necesita trato aparte
 
-Donde no hay detección, el panel **avisa en la barra superior** y no marca
-ninguna sesión como cerrada, en vez de darlas todas por muertas, que es mentira
-y encima silenciosa. Si alguien quiere aportar el adaptador de macOS (`ps` más
-`lsof -d cwd`), el sitio es `liveCwds()` en `server.mjs`.
+No abre un proceso por sesión, sino **una sola aplicación con una docena de
+procesos**, ninguno con el directorio de trabajo de una sesión concreta. Tampoco
+deja el rastro en disco donde parecería: `sessions/` y `session-env/<uuid>/`
+están vacíos. Y `claude agents --json`, con la app abierta y seis sesiones vivas,
+**devuelve una lista vacía**: el CLI y la app no se ven entre ellos.
+
+Así que de la app solo se puede saber si está corriendo, y resulta que es
+justo lo que hace falta: una sesión del sidebar no muere al cerrar una terminal,
+vive mientras viva la app. Mientras corra, ninguna de sus sesiones se marca como
+cerrada, y el panel lo dice en la barra en vez de callárselo.
 
 ---
 
