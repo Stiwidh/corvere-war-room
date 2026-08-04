@@ -56,8 +56,6 @@ const TAIL_LEAD = 4 * 1024 * 1024;
 const TAIL_SUB = 512 * 1024;
 const MAX_AGE_H = 36;          // transcripts más viejos ni se miran
 const WORKING_S = 45;          // sin escribir más de esto ya no está "trabajando"
-// con la app de escritorio viva, hasta dónde se le concede la duda a una sesión
-const GRACIA_APP = 3 * 3600;
 const MSG_KEEP = 40;
 const ACT_KEEP = 18;
 
@@ -683,14 +681,15 @@ async function scan() {
        Donde hay /proc se afirma siempre: da certeza sobre las sesiones de
        terminal, que son la mayoría, y renunciar a ella porque la app de
        escritorio esté abierta en otra ventana resucita sesiones muertas de hace
-       días. Fuera de Linux no hay esa certeza y manda la app... pero con un
-       límite: que su proceso exista no significa que la estés usando, porque
-       Electron deja residentes cuando cierras la ventana (medido: 11 h de
-       proceso vivo sin ventana a la vista). Así que la duda solo protege a las
-       sesiones que han escrito hace poco; una que lleva medio día muda está
-       muerta aunque la app siga en memoria. */
-    const dudaApp = appViva && (ahora - actLider) < GRACIA_APP;
-    const podemosDescartar = HAY_PROC || (!!cli && !dudaApp);
+       días. Fuera de Linux no hay esa certeza y manda la app: mientras corra, no
+       se descarta ninguna de sus sesiones.
+
+       Sin plazo de gracia, y es deliberado: una sesión del sidebar NO se cierra
+       por llevar horas callada, sigue ahí para volver a ella. Poner un límite de
+       tres horas dejaba el panel vacío en una máquina con seis sesiones abiertas
+       de entre 6 y 31 h, que es justo el caso normal de quien trabaja a ratos.
+       Lo que sí acota es `MAX_AGE_H`, la ventana general. */
+    const podemosDescartar = HAY_PROC || (!!cli && !appViva);
 
     if (!abierta && podemosDescartar) s.status = 'closed';
     else if (idleLider < WORKING_S) s.status = 'working';
