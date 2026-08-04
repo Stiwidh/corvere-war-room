@@ -1,0 +1,14 @@
+{
+  "name": "corvere-war-room",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Panel en vivo de la flota de agentes de Claude Code",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/Stiwidh/corvere-war-room.git" },
+  "scripts": {
+    "warroom": "node server.mjs",
+    "open": "./abrir.sh"
+  },
+  "engines": { "node": ">=20" }
+}

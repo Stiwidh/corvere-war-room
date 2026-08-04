@@ -1,0 +1,28 @@
+[Unit]
+Description=War Room — panel en vivo de la flota de agentes
+Documentation=file://__DIR__/README.md
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=__DIR__
+# Toda la configuración (avisos, destino, clave) vive en ~/.config/warroom/env,
+# fuera del repositorio y en permisos 600. Aquí no va nada.
+# node suele vivir dentro de nvm, que systemd no carga. Se resuelve en cada
+# arranque en vez de fijar la versión: así sobrevive a un `nvm install`. Sin
+# nvm, cae al node del PATH.
+ExecStart=/bin/sh -c 'N="$(ls -d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1)"; exec "${N:-$(command -v node)}" server.mjs'
+Restart=always
+RestartSec=3
+
+# 🚨 NO añadir PrivateTmp, ProtectSystem, ProtectHome ni ReadOnlyPaths.
+# Todas ellas meten al servicio en un mount namespace propio, y desde ahí
+# `readlink /proc/<pid>/cwd` de los procesos de Claude Code devuelve EACCES.
+# Sin ese dato el panel no puede distinguir una sesión que TE ESPERA de una
+# CERRADA, y las pinta todas como cerradas sin dar ningún error.
+# Medido el 2026-08-02: sin opciones 6 de 6 cwd legibles; con PrivateTmp o con
+# ProtectSystem=strict, 0 de 6. NoNewPrivileges es inocuo y se queda.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
