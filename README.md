@@ -1,14 +1,21 @@
 # War Room
 
-Panel en vivo de la flota de agentes de Claude Code. Enseña, en un monitor
-aparte, qué sesiones tienes abiertas, cuáles están trabajando, cuáles llevan
-horas esperándote, qué está haciendo cada agente ahora mismo y quién habla con
-quién.
+Panel en vivo de la flota de agentes de Claude Code. En un monitor aparte o en
+una ventana cualquiera, enseña qué sesiones tienes abiertas, cuáles están
+trabajando, cuáles llevan horas esperándote, qué está haciendo cada agente ahora
+mismo y quién habla con quién.
 
 Solo lectura: no escribe nada dentro de `~/.claude`.
 
 Sin dependencias: Node 20 o más nuevo y nada más. No hay `npm install` que valga,
 ni en el servidor ni en el navegador.
+
+![El mapa de la flota](docs/mapa.png)
+
+Cada sesión es un pulpo: la cabeza es su hilo principal y los tentáculos sus
+agentes. Las del mismo repositorio comparten zona. El color dice en qué anda
+cada una, y la arista magenta es un mensaje que un agente le manda a otro sin
+pasar por el líder.
 
 ---
 
@@ -58,6 +65,11 @@ que arranca solo al iniciar sesión y se reinicia si se cae:
 
 Es idempotente y genera el unit de systemd con la ruta de tu copia, así que se
 puede repetir sin miedo.
+
+**Ojo con el nombre: `install.sh` no instala dependencias**, porque no hay
+ninguna que instalar. Lo único que hace es registrar el servicio. Para usar el
+panel no hace falta ejecutarlo, y por eso tampoco hay `npm install` en ninguna
+parte: `npm run warroom` arranca sobre Node pelado.
 
 | Necesitas | Comando |
 |---|---|
@@ -126,6 +138,8 @@ foco: esa sesión se queda sola y se abre para ocupar todo el lienzo, con los
 nombres de sus agentes siempre visibles. Debajo, la ficha de la sesión (rama,
 cuánto lleva viva, **dónde lo dejaste**, acciones, tokens y mensajes), el stream
 de cada agente, los retirados, el tablero compartido y el feed de mensajes.
+
+![El detalle de una sesión](docs/detalle.png)
 
 ### Los tres estados
 

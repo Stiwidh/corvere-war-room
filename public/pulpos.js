@@ -466,6 +466,14 @@ const Pulpos = (() => {
       ctx.setLineDash([]);
     }
 
+    /* Sitios que una etiqueta no puede pisar. Se siembra con las cabezas y con
+       su cartel de estado: se dibujan después, pero ya sabemos dónde van a caer. */
+    const ocupado = [];
+    for (const L of listaL){
+      ocupado.push({ x0: L.x-L.r-6, x1: L.x+L.r+6, y0: L.y-L.r-6, y1: L.y+L.r+6 });
+      ocupado.push({ x0: L.x-70,    x1: L.x+70,    y0: L.y+L.r+6, y1: L.y+L.r+34 });
+    }
+
     for (const a of listaA){
       const f = FAM[a.fam].forma, pulso = a.vivo && !a.retirado ? 1+Math.sin(t*2.4+a.fase)*0.06 : 1;
       if (a.vivo && !a.retirado){ forma(a.x,a.y,a.r*pulso+7,f); ctx.fillStyle = a.color+'18'; ctx.fill(); }
@@ -476,22 +484,33 @@ const Pulpos = (() => {
       ctx.font = '700 8.5px ui-monospace,monospace'; ctx.textAlign = 'center';
       ctx.fillText(a.ini, a.x, a.y + (f==='tri'?6:3));
       if (!a.retirado || foco){
-        // en foco hay sitio de sobra: los nombres se ven siempre
-        let libre = !!foco;
-        if (!libre){
-          libre = true;
-          for (const o of listaA){
-            if (o===a) continue;
-            if (Math.abs(o.y-a.y) < 13 && o.x > a.x && o.x-a.x < 76){ libre = false; break; }
-          }
-        }
-        if (libre){
+        /* Las etiquetas se estorban entre ellas, y en foco más que en ningún
+           sitio: ahí son casi el doble de largas y con más cuerpo. Antes se
+           daban por buenas sin mirar ("en foco hay sitio de sobra") y salían
+           nombres pisados unos encima de otros. Ahora cada una mide su caja de
+           verdad y busca hueco: primero a la derecha del nodo, si no cabe a la
+           izquierda, y si tampoco, no se dibuja. No se pierde nada: las
+           iniciales siguen dentro del círculo y el nombre entero sale al pasar
+           el ratón. */
+        ctx.font = (foco ? '600 10.5px ' : '600 9px ') + 'ui-sans-serif,system-ui';
+        const tope = foco ? 30 : 16;
+        const n = a.etiqueta.length > tope ? a.etiqueta.slice(0,tope-1)+'…' : a.etiqueta;
+        const an = ctx.measureText(n).width, alto = foco ? 14 : 12;
+        const y0 = a.y+3-alto/2, y1 = a.y+3+alto/2;
+        const donde = [
+          { align:'left',  x: a.x+a.r+7, x0: a.x+a.r+7,    x1: a.x+a.r+7+an },
+          { align:'right', x: a.x-a.r-7, x0: a.x-a.r-7-an, x1: a.x-a.r-7    },
+        ];
+        const choca = (s) =>
+          ocupado.some((c) => c.x0 < s.x1 && c.x1 > s.x0 && c.y0 < y1 && c.y1 > y0) ||
+          listaA.some((o) => o !== a &&
+            o.x+o.r > s.x0 && o.x-o.r < s.x1 && o.y+o.r > y0 && o.y-o.r < y1);
+        const sitio = donde.find((s) => !choca(s));
+        if (sitio){
+          ocupado.push({ x0: sitio.x0, x1: sitio.x1, y0, y1 });
           ctx.fillStyle = foco ? '#9d98ac' : '#78748a';
-          ctx.textAlign = 'left';
-          ctx.font = (foco ? '600 10.5px ' : '600 9px ') + 'ui-sans-serif,system-ui';
-          const tope = foco ? 30 : 16;
-          const n = a.etiqueta.length > tope ? a.etiqueta.slice(0,tope-1)+'…' : a.etiqueta;
-          ctx.fillText(n, a.x+a.r+7, a.y+3);
+          ctx.textAlign = sitio.align;
+          ctx.fillText(n, sitio.x, a.y+3);
         }
       }
     }

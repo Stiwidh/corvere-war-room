@@ -62,6 +62,13 @@ const ACT_KEEP = 18;
 const PAL = ['#9810FA', '#E60076', '#00E68C', '#FFB547', '#6fb1ff',
              '#c084fc', '#ff9ec9', '#00c2b8', '#f97362', '#8b8ef7'];
 
+/* Modo demostración: sirve una flota inventada en lugar de tus transcripts, para
+   que quien clone esto vea el panel lleno sin tener sesiones abiertas, y para
+   sacar las capturas del README sin enseñar nombres reales. El módulo solo se
+   carga si se pide, así que en uso normal ni existe. */
+const DEMO = ajuste('WARROOM_DEMO') === '1';
+const demo = DEMO ? await import('./demo.mjs') : null;
+
 /** sessionId -> estado acumulado */
 const sessions = new Map();
 /** ruta -> offset de lectura */
@@ -944,6 +951,7 @@ async function medirReglas() {
 /* ─────────────────────────── snapshot ─────────────────────────── */
 
 function snapshot() {
+  if (demo) return demo.flota(now());
   const list = [...sessions.values()]
     .filter((s) => s.status !== 'closed' || s.idle < 6 * 3600)
     .sort((a, b) => {
@@ -1058,6 +1066,7 @@ const server = http.createServer(async (req, res) => {
 
 let scanning = false;
 async function tick() {
+  if (demo) return;      // en demostración no se lee ni un transcript
   if (scanning) return;
   scanning = true;
   try { await scan(); await revisarAvisos(); }
