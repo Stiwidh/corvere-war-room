@@ -366,10 +366,12 @@ const hace = (iso) => {
 
   Dos decisiones de diseño que no son estéticas:
 
-  1. La barra de ocupación se pinta SIEMPRE, incluso al 4%. Una lista que solo enseña
-     lo que va mal no deja comparar, y aquí lo que importa no es el número de hoy sino
-     a qué velocidad sube: ver las seis juntas es lo que hace evidente que EVA va por
-     delante del un proyecto, que era el que teníamos fichado.
+  1. El porcentaje es contra el techo de SU plan, y por eso el plan se muestra al lado.
+     Free son 500 MB y Pro 8 GB por proyecto: con un techo único, otra instancia (Pro)
+     salía al 84% en rojo estando al 5%, y esa alarma falsa tapaba la única de verdad,
+     la del un proyecto en Free. Un panel que grita por lo que no importa deja de mirarse.
+     La barra se pinta siempre, incluso al 4%, porque lo que importa no es el número de
+     hoy sino a qué velocidad sube, y eso solo se ve comparando.
   2. Las alertas van agrupadas por tipo y no una a una. 153 eventos en 48 h en lista
      plana son una pared que nadie lee; 20 tipos ordenados por gravedad se leen en
      cinco segundos, que es el tiempo real que tiene un panel.
@@ -390,6 +392,7 @@ function pintarProduccion(d) {
         <span style="display:block;height:100%;width:${Math.min(i.pct, 100)}%;background:${color(i.pct)}"></span>
       </span>
       <span class="tnum" style="width:34px;font-size:11px;color:${color(i.pct)}">${i.pct}%</span>
+      <span class="note" style="width:62px;font-size:10px;text-transform:uppercase">${i.plan || ''}</span>
       <span class="note" style="width:118px;font-size:11px">${i.crons} crons${
         i.crons_parados ? ` · <b style="color:var(--err)">${i.crons_parados} parados</b>` : ''}</span>
     </div>`).join('');
