@@ -239,7 +239,11 @@ const GIT_TTL = 20;           // segundos
 
 function git(cwd, args) {
   return new Promise((resolve) => {
-    execFile('git', ['-C', cwd, ...args], { timeout: 4000, maxBuffer: 4 << 20 },
+    /* `windowsHide` no es cosmética: sin ella, en Windows cada `git` abre una
+       ventana de consola que parpadea en pantalla. Son cuatro por repo cada
+       GIT_TTL segundos, así que el panel acaba siendo un intermitente aunque
+       nadie lo esté mirando. La misma precaución que en `ejecutar()`. */
+    execFile('git', ['-C', cwd, ...args], { timeout: 4000, windowsHide: true, maxBuffer: 4 << 20 },
       (err, out) => resolve(err ? null : String(out)));
   });
 }
