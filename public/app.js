@@ -342,4 +342,121 @@ const volver = () => {
 };
 $('back').addEventListener('click', volver);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && openId) volver(); });
+
+/* ── Grafo del código ────────────────────────────────────────────────────────
+ * Solo se dibuja si el servidor encuentra el JSON que exporta APPs/CORVERE_GRAPH.
+ * En una máquina sin grafo devuelve 404 y esta sección no aparece jamás.
+ *
+ * La pregunta que responde no es "cuántos nodos tiene" (eso da igual), sino
+ * "¿se está usando?". Por eso el número grande es el de consultas que llegan
+ * SOLAS desde los hooks: si eso es cero, el grafo depende de que alguien se
+ * acuerde, y ahí es donde murió el MCP de Obsidian con 17 usos en 1.527 sesiones.
+ */
+const hace = (iso) => {
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (!isFinite(s)) return '?';
+  if (s < 90) return Math.round(s) + ' s';
+  if (s < 5400) return Math.round(s / 60) + ' min';
+  if (s < 172800) return Math.round(s / 3600) + ' h';
+  return Math.round(s / 86400) + ' d';
+};
+
+async function pintarGrafo() {
+  let d = null;
+  try {
+    const r = await fetch('/api/grafo');
+    if (r.ok) d = await r.json();
+  } catch { /* sin grafo: la sección no existe y ya está */ }
+  if (!d || d.ausente) { $('grafoPanel').hidden = true; $('vistasPanel').hidden = true; return; }
+  pintarVistas(d);
+
+  const u = d.uso, s = d.salud;
+  // Semáforo honesto: lo que importa es el uso automático, no el total.
+  const salud = u.desde_hooks === 0 ? '#E60076'
+    : (u.ultimas_24h === 0 ? '#FFB547' : '#00E68C');
+  const veredicto = u.desde_hooks === 0
+    ? 'NADIE lo consulta solo: depende de que alguien se acuerde'
+    : (u.ultimas_24h === 0 ? 'sin uso en 24 h' : 'vivo');
+
+  const kpi = (n, txt, col) => `<div style="min-width:104px">
+      <div class="tnum" style="font-size:26px;line-height:1;color:${col || '#e8e6f0'}">${n}</div>
+      <div class="note" style="font-size:11px">${txt}</div></div>`;
+
+  const viejo = (s.snapshots_produccion || []).filter((x) => x.horas > 168).length;
+  const idx = (s.indexaciones || [])[0];
+
+  $('grafonote').textContent =
+    `${s.nodos_total.toLocaleString('es')} nodos · ${s.aristas_total.toLocaleString('es')} aristas`
+    + (idx ? ` · indexado hace ${hace(idx.empezado)}` : '');
+
+  $('grafo').innerHTML = `
+    <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start">
+      ${kpi(u.desde_hooks, 'consultas desde hooks', salud)}
+      ${kpi(u.ultimas_24h, 'en 24 h')}
+      ${kpi(u.total, 'total')}
+      ${kpi(d.drift.rpc_fantasma + d.drift.tabla_fantasma, 'drift repo↔prod', '#FFB547')}
+      ${viejo ? kpi(viejo, 'snapshots >7 d', '#E60076') : ''}
+    </div>
+    <div class="note" style="margin:8px 0 12px;color:${salud}">${veredicto}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+      ${u.por_verbo.map((v) => `<span class="note" style="border:1px solid #3a3550;
+        border-radius:999px;padding:2px 9px;font-size:11px">
+        ${v.verbo} <b class="tnum">${v.n}</b>
+        <span style="opacity:.6">${v.origen}</span></span>`).join('')}
+    </div>
+    <div class="list">${(u.ultimas || []).slice(0, 12).map((q) => `
+      <div style="display:flex;gap:10px;font-size:12px;padding:3px 0;border-bottom:1px solid #26223a">
+        <span class="tnum note" style="width:52px">${hace(q.ts)}</span>
+        <b style="width:74px">${q.verbo}</b>
+        <span style="opacity:.65;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          ${(q.argumento || '').replace(/[<>]/g, '')}</span>
+        <span class="note tnum" style="width:46px;text-align:right">${q.filas} f</span>
+        <span class="note" style="width:74px;text-align:right;opacity:.55">${q.origen}</span>
+      </div>`).join('')}</div>`;
+  $('grafoPanel').hidden = false;
+}
+
+/* Vistas del mapa del código. Los SVG llegan ya dibujados desde el grafo, así que aquí
+ * solo se inyectan: si el dibujo cambia allí, cambia aquí sin tocar nada. */
+let vistaActiva = 'treemap';
+const LEDE = {
+  treemap: ['Cada rectángulo es un <b>módulo</b> y su área es su número de ficheros. '
+    + 'Es la única vista que mete el ecosistema entero en una pantalla sin mentir sobre '
+    + 'el tamaño. Pasa el ratón para ver la ruta y el conteo.',
+    '<i style="color:var(--accent-soft)">pantalla</i>'
+    + '<i style="color:var(--accent)">servicio</i><i style="color:var(--ok)">Edge Functions</i>'],
+  matriz: ['Fila = quién importa, columna = a quién. Una <b>columna poblada</b> es una '
+    + 'pieza de la que depende medio sistema; una <b>fila poblada</b>, un módulo frágil. '
+    + 'Los bloques pegados a la diagonal son proyectos aislados entre sí, que es lo que '
+    + 'permite trabajar en paralelo sin pisarse.',
+    '<i style="color:var(--accent)">dependencia</i>'
+    + '<i style="color:var(--err)">ciclo (se importan mutuamente)</i>'],
+};
+
+function pintarVistas(d){
+  const v = d && d.vistas;
+  if (!v || !v.treemap) { $('vistasPanel').hidden = true; return; }
+  const s = v.stats || {};
+  $('vistasnote').textContent =
+    `${s.modulos} módulos · ${s.ficheros} ficheros · ${s.pares} dependencias · ${s.ciclos} ciclos`;
+  const [lede, ley] = LEDE[vistaActiva];
+  const svg = vistaActiva === 'treemap'
+    ? `<svg viewBox="0 0 1180 560">${v.treemap}</svg>`
+    : `<svg viewBox="0 0 ${v.lado_matriz} ${v.lado_matriz}">${v.matriz}</svg>`;
+  $('vistas').innerHTML = `<p class="v-lede">${lede}</p><div class="v-ley">${ley}</div>${svg}`;
+  for (const b of document.querySelectorAll('.vtab'))
+    b.classList.toggle('on', b.dataset.v === vistaActiva);
+  $('vistasPanel').hidden = false;
+}
+
+document.getElementById('vtabs').addEventListener('click', async (e) => {
+  const b = e.target.closest('.vtab');
+  if (!b) return;
+  vistaActiva = b.dataset.v;
+  try { const r = await fetch('/api/grafo'); if (r.ok) pintarVistas(await r.json()); } catch {}
+});
+
+pintarGrafo();
+setInterval(pintarGrafo, 20000);
+
 connect();

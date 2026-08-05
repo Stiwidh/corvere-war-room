@@ -22,6 +22,29 @@ const TASKS = path.join(HOME, '.claude', 'tasks');
 const TEAMS = path.join(HOME, '.claude', 'teams');
 const PUBLIC = path.join(import.meta.dirname, 'public');
 
+/*
+ * IMPACT-OK: añadido aditivo. Mapeado antes de tocar: el enrutado son comparaciones de
+ * `url.pathname` en createServer (líneas ~1117-1162) y el resto cae al servidor de
+ * ficheros estáticos; esto añade una rama más y no toca ninguna existente. Nada en
+ * `public/` depende todavía de ella. No hay producción implicada: es un panel local.
+ *
+ * El grafo del código (APPs/CORVERE_GRAPH) es OPCIONAL. Vive en un fichero JSON que
+ * exporta él mismo, no en su SQLite: el README de este panel promete "Node 20 o más
+ * nuevo y nada más", y `node:sqlite` no existe en Node 20. Si el fichero no está (por
+ * ejemplo en el Windows de referencia, donde no hay grafo), esto devuelve null, la vista no
+ * aparece y el War Room funciona exactamente igual que antes.
+ */
+const GRAFO_JSON = process.env.WARROOM_GRAFO_JSON ||
+  path.join(import.meta.dirname, '..', 'CORVERE_GRAPH', 'data', 'warroom.json');
+
+async function leerGrafo() {
+  try {
+    return JSON.parse(await fsp.readFile(GRAFO_JSON, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
 const PORT = Number(process.env.WARROOM_PORT || 7777);
 const HOST = '127.0.0.1';
 
@@ -1159,6 +1182,11 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/api/state') {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     return res.end(JSON.stringify(snapshot(), null, 2));
+  }
+  if (url.pathname === '/api/grafo') {
+    const datos = await leerGrafo();
+    res.writeHead(datos ? 200 : 404, { 'Content-Type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify(datos || { ausente: true }));
   }
 
   const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);

@@ -130,6 +130,23 @@
   .nada{padding:40px 20px; text-align:center; color:var(--txt-3); font-family:var(--mono); font-size:12px}
 
   /* ── detalle ── */
+.vtabs{display:flex;gap:6px;margin-left:14px}
+  .vtab{border:1px solid var(--line);background:var(--void);color:var(--txt-3);border-radius:6px;
+    padding:3px 10px;font-family:var(--mono);font-size:10px;cursor:pointer;
+    letter-spacing:.02em;text-transform:none;font-weight:500}
+  .vtab.on{border-color:var(--accent);color:var(--txt);background:var(--surf)}
+  .v-lede{color:var(--txt-2);font-size:11.5px;line-height:1.55;margin:0 0 10px;max-width:105ch}
+  .v-lede b{color:var(--txt)}
+  .v-ley{display:flex;gap:13px;flex-wrap:wrap;font-family:var(--mono);font-size:10px;
+    color:var(--txt-3);margin-bottom:9px}
+  .v-ley i{font-style:normal;display:inline-flex;align-items:center;gap:5px}
+  .v-ley i::before{content:'';width:8px;height:8px;border-radius:2px;background:currentColor}
+  #vistas svg{display:block;width:100%;height:auto;overflow:visible}
+  #vistas .tm rect{stroke-width:1;transition:fill-opacity .15s}
+  #vistas .tm:hover rect{fill-opacity:.62!important}
+  #vistas .tm-t{fill:var(--txt);font-size:10.5px;font-weight:700;font-family:var(--mono);pointer-events:none}
+  #vistas .tm-s{fill:var(--txt-3);font-size:9px;font-family:var(--mono);pointer-events:none}
+  #vistas .mx-t{fill:var(--txt-3);font-size:9.5px;font-family:var(--mono)}
   .panel{background:var(--void-2); border:1px solid var(--line); border-radius:10px;
     display:flex; flex-direction:column; overflow:hidden}
   .panel > h2{margin:0; padding:8px 13px; font-size:9.5px; font-weight:700; letter-spacing:.15em;
@@ -250,6 +267,31 @@
   <section class="panel" id="cerradasPanel" hidden>
     <h2>Cerradas hace poco <span class="note">siguen en disco: se pueden reproducir</span></h2>
     <div class="list" id="cerradas"></div>
+  </section>
+
+  <!--
+    Grafo del código. Aparece SOLO si existe APPs/CORVERE_GRAPH/data/warroom.json.
+    En una máquina sin grafo (el Windows de referencia) esta sección no se muestra nunca.
+    Sirve para una pregunta concreta: ¿se está usando el grafo, o es otro Obsidian?
+  -->
+  <section class="panel" id="grafoPanel" hidden>
+    <h2>Grafo del código <span class="note" id="grafonote"></span></h2>
+    <div id="grafo" style="padding:10px 14px 14px"></div>
+  </section>
+
+  <!--
+    Vistas del grafo. Llegan ya dibujadas desde APPs/CORVERE_GRAPH (SVG en el JSON), así
+    que aquí no se reimplementa nada: si cambia el dibujo allí, cambia aquí solo.
+    Igual que el panel de arriba, no aparece si no hay grafo en esta máquina.
+  -->
+  <section class="panel" id="vistasPanel" hidden>
+    <h2>Mapa del código
+      <span class="vtabs" id="vtabs">
+        <button type="button" class="vtab on" data-v="treemap">dónde está el peso</button>
+        <button type="button" class="vtab" data-v="matriz">quién depende de quién</button>
+      </span>
+      <span class="note" id="vistasnote"></span></h2>
+    <div id="vistas" style="padding:10px 14px 16px"></div>
   </section>
 
   <div id="detail" hidden style="display:flex; flex-direction:column; gap:12px">

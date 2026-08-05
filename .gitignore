@@ -1,3 +1,9 @@
 node_modules/
 *.log
 .DS_Store
+
+# Snapshots del grafo y de produccion. NUNCA al remoto: pueden llevar nombres de
+# proyecto, rutas, y el dia que exista el colector, agregados de produccion. El repo
+# tiene remoto publico y una PII filtrada sobrevive al `rm` (council 2026-08-05, riesgo).
+data/
+*.jsonl
