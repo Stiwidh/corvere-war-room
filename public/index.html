@@ -280,6 +280,18 @@
   </section>
 
   <!--
+    Producción: las 6 instancias Supabase y las alertas que ya emite el centro de mando.
+    Es un ESPEJO, no un centro de alertas: el pipeline de notificación sigue viviendo
+    en el centro de mando y el usuario ya está suscrito a su canal. Aquí se ve de un vistazo
+    lo que hay corriendo, y sobre todo cuánto espacio queda, que es lo que avisa con
+    semanas de margen en vez de con horas. Este panel no actúa sobre nada.
+  -->
+  <section class="panel" id="prodPanel" hidden>
+    <h2>Producción <span class="note" id="prodnote"></span></h2>
+    <div id="prod" style="padding:10px 14px 14px"></div>
+  </section>
+
+  <!--
     Vistas del grafo. Llegan ya dibujadas desde APPs/CORVERE_GRAPH (SVG en el JSON), así
     que aquí no se reimplementa nada: si cambia el dibujo allí, cambia aquí solo.
     Igual que el panel de arriba, no aparece si no hay grafo en esta máquina.

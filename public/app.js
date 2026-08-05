@@ -361,14 +361,71 @@ const hace = (iso) => {
   return Math.round(s / 86400) + ' d';
 };
 
+/*
+  Las 6 instancias Supabase y las alertas vivas del centro de mando.
+
+  Dos decisiones de diseño que no son estéticas:
+
+  1. La barra de ocupación se pinta SIEMPRE, incluso al 4%. Una lista que solo enseña
+     lo que va mal no deja comparar, y aquí lo que importa no es el número de hoy sino
+     a qué velocidad sube: ver las seis juntas es lo que hace evidente que EVA va por
+     delante del un proyecto, que era el que teníamos fichado.
+  2. Las alertas van agrupadas por tipo y no una a una. 153 eventos en 48 h en lista
+     plana son una pared que nadie lee; 20 tipos ordenados por gravedad se leen en
+     cinco segundos, que es el tiempo real que tiene un panel.
+*/
+function pintarProduccion(d) {
+  const p = d.produccion;
+  if (!p || !p.instancias || !p.instancias.length) { $('prodPanel').hidden = true; return; }
+  $('prodPanel').hidden = false;
+
+  const color = (pct) => (pct >= 80 ? 'var(--err)' : pct >= 60 ? 'var(--warn)' : 'var(--ok)');
+  const sev = { critical: 'var(--err)', error: 'var(--err)', warning: 'var(--warn)', info: 'var(--txt-3)' };
+
+  const barras = p.instancias.map((i) => `
+    <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
+      <span style="width:132px;font-size:12px;color:var(--txt-2)">${i.nombre}</span>
+      <span class="tnum" style="width:62px;font-size:12px;text-align:right">${i.mb} MB</span>
+      <span style="flex:1;min-width:90px;height:7px;background:var(--surf-2);border-radius:4px;overflow:hidden">
+        <span style="display:block;height:100%;width:${Math.min(i.pct, 100)}%;background:${color(i.pct)}"></span>
+      </span>
+      <span class="tnum" style="width:34px;font-size:11px;color:${color(i.pct)}">${i.pct}%</span>
+      <span class="note" style="width:118px;font-size:11px">${i.crons} crons${
+        i.crons_parados ? ` · <b style="color:var(--err)">${i.crons_parados} parados</b>` : ''}</span>
+    </div>`).join('');
+
+  const alertas = (p.alertas_48h || []).slice(0, 12).map((a) => `
+    <div style="display:flex;gap:10px;font-size:12px;padding:3px 0;border-bottom:1px solid var(--line-soft)">
+      <span class="tnum" style="width:34px;text-align:right;color:${sev[a.severidad] || 'var(--txt-3)'}">${a.n}</span>
+      <span style="width:64px;font-size:10px;text-transform:uppercase;color:${sev[a.severidad] || 'var(--txt-3)'}">${a.severidad}</span>
+      <span style="flex:1;color:var(--txt-2)">${a.tipo}</span>
+      <span class="note tnum" style="font-size:11px">${a.ultima || ''}</span>
+    </div>`).join('');
+
+  const resto = (p.alertas_48h || []).length - 12;
+  $('prodnote').textContent =
+    `${p.instancias.length} instancias · ${p.alertas_eventos} eventos de alerta en 48 h`;
+  $('prod').innerHTML = `
+    ${barras}
+    <div class="note" style="margin:12px 0 6px;font-size:11px">
+      ALERTAS 48 H — las emite el centro de mando, que es el centro de mando. Aquí solo se miran.
+    </div>
+    ${alertas}
+    ${resto > 0 ? `<div class="note" style="font-size:11px;padding-top:6px">… y ${resto} tipo${resto > 1 ? 's' : ''} más</div>` : ''}`;
+}
+
 async function pintarGrafo() {
   let d = null;
   try {
     const r = await fetch('/api/grafo');
     if (r.ok) d = await r.json();
   } catch { /* sin grafo: la sección no existe y ya está */ }
-  if (!d || d.ausente) { $('grafoPanel').hidden = true; $('vistasPanel').hidden = true; return; }
+  if (!d || d.ausente) {
+    $('grafoPanel').hidden = true; $('vistasPanel').hidden = true;
+    $('prodPanel').hidden = true; return;
+  }
   pintarVistas(d);
+  pintarProduccion(d);
 
   const u = d.uso, s = d.salud;
   // Semáforo honesto: lo que importa es el uso automático, no el total.
