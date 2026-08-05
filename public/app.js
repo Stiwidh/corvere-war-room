@@ -362,7 +362,15 @@ const hace = (iso) => {
 };
 
 /*
-  Las 6 instancias Supabase y las alertas vivas del centro de mando.
+  Escapa texto que viene de producción antes de inyectarlo como HTML. Los títulos y
+  mensajes de las alertas los escribe otro sistema y pueden traer `<`, `&` o comillas:
+  sin esto, un mensaje con un fragmento de SQL o de HTML rompe el panel o peor.
+*/
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/*
+  Las instancias Supabase y las alertas vivas del centro de mando.
 
   Dos decisiones de diseño que no son estéticas:
 
@@ -397,24 +405,58 @@ function pintarProduccion(d) {
         i.crons_parados ? ` · <b style="color:var(--err)">${i.crons_parados} parados</b>` : ''}</span>
     </div>`).join('');
 
-  const alertas = (p.alertas_48h || []).slice(0, 12).map((a) => `
-    <div style="display:flex;gap:10px;font-size:12px;padding:3px 0;border-bottom:1px solid var(--line-soft)">
-      <span class="tnum" style="width:34px;text-align:right;color:${sev[a.severidad] || 'var(--txt-3)'}">${a.n}</span>
-      <span style="width:64px;font-size:10px;text-transform:uppercase;color:${sev[a.severidad] || 'var(--txt-3)'}">${a.severidad}</span>
-      <span style="flex:1;color:var(--txt-2)">${a.tipo}</span>
-      <span class="note tnum" style="font-size:11px">${a.ultima || ''}</span>
-    </div>`).join('');
+  /*
+    Cada tipo se despliega con un clic y enseña hasta 3 avisos reales: título, mensaje y
+    si sigue abierto. Es lo que convierte la lista en algo accionable — "64
+    automation_hidden_failure" no dice nada, pero "56 ya resueltas y estas 8 siguen
+    vivas, en la ejecución 1e007cd4" sí.
 
-  const resto = (p.alertas_48h || []).length - 12;
+    Se usa <details>/<summary> nativo en vez de un toggle a mano: no necesita estado en
+    JS, sobrevive al repintado si se marca `open`, y es accesible por teclado gratis.
+  */
+  const abierto = new Set([...document.querySelectorAll('#prod details[open]')]
+    .map((d) => d.dataset.k));
+
+  const muestra = (m) => `
+    <div style="padding:5px 0 5px 44px;border-bottom:1px solid var(--line-soft)">
+      <div style="font-size:12px;color:var(--txt)">
+        <span style="color:${m.resolved ? 'var(--ok)' : 'var(--warn)'}">${m.resolved ? '✓' : '●'}</span>
+        ${esc(m.titulo || '(sin título)')}
+        ${m.occurrences > 1 ? `<span class="note tnum" style="font-size:10px"> ×${m.occurrences}</span>` : ''}
+      </div>
+      <div class="note" style="font-size:11px;line-height:1.45;margin-top:2px">${esc(m.mensaje || '')}</div>
+    </div>`;
+
+  const alertas = (p.alertas_48h || []).map((a) => {
+    const c = sev[a.severidad] || 'var(--txt-3)';
+    const k = `${a.severidad}:${a.tipo}`;
+    // Se muestran las abiertas; el total solo aparece si hay resueltas que explicar.
+    const cerradas = (a.total || 0) - (a.abiertas || 0);
+    return `
+    <details class="alerta" data-k="${esc(k)}"${abierto.has(k) ? ' open' : ''}>
+      <summary style="display:flex;gap:10px;font-size:12px;padding:3px 0;
+                      border-bottom:1px solid var(--line-soft);cursor:pointer">
+        <span class="tnum" style="width:34px;text-align:right;color:${c}">${a.abiertas}</span>
+        <span style="width:64px;font-size:10px;text-transform:uppercase;color:${c}">${a.severidad}</span>
+        <span style="flex:1;color:var(--txt-2)">${esc(a.tipo)}</span>
+        ${cerradas > 0 ? `<span class="note" style="font-size:10px">${cerradas} resueltas</span>` : ''}
+        ${a.ocurrencias > a.total ? `<span class="note tnum" style="font-size:10px">${a.ocurrencias.toLocaleString('es')} veces</span>` : ''}
+        <span class="note tnum" style="font-size:11px;width:104px;text-align:right">${a.ultima || ''}</span>
+      </summary>
+      ${(a.muestras || []).map(muestra).join('') ||
+        '<div class="note" style="padding:6px 0 6px 44px;font-size:11px">sin detalle en el snapshot</div>'}
+    </details>`;
+  }).join('');
+
   $('prodnote').textContent =
-    `${p.instancias.length} instancias · ${p.alertas_eventos} eventos de alerta en 48 h`;
+    `${p.instancias.length} instancias · ${p.alertas_abiertas} alertas abiertas en 48 h`;
   $('prod').innerHTML = `
     ${barras}
     <div class="note" style="margin:12px 0 6px;font-size:11px">
       ALERTAS 48 H — las emite el centro de mando, que es el centro de mando. Aquí solo se miran.
+      El número es lo que sigue ABIERTO; pulsa una para ver el detalle.
     </div>
-    ${alertas}
-    ${resto > 0 ? `<div class="note" style="font-size:11px;padding-top:6px">… y ${resto} tipo${resto > 1 ? 's' : ''} más</div>` : ''}`;
+    ${alertas}`;
 }
 
 async function pintarGrafo() {
