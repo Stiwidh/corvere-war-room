@@ -831,6 +831,58 @@ async function emitir(evento) {
   } catch { return false; }
 }
 
+/**
+ * Cierra un aviso cuando su condición deja de cumplirse.
+ *
+ * IMPACT-OK: función nueva. Mapeado a mano (sin subagente, no solicitado): nadie importa
+ * este fichero, es el servidor del panel. Usa el MISMO endpoint que `emitir` con
+ * `resolve: true`, así que no reimplementa el pipeline de alertas (regla del centro de mando:
+ * nunca insertar ni tocar `system_alerts` directamente). Verificado en producción: la EF
+ * `ingest-alert` vive en <ref-de-la-instancia> y ya acepta esta rama.
+ *
+ * El `title` tiene que ser IDÉNTICO al de la emisión: `ingest-alert` deriva la clave de
+ * deduplicación del title cuando el evento no trae una entidad propia, así que un texto
+ * distinto cerraría otra cosa (o nada).
+ */
+async function resolver(evento) {
+  const url = urlIngest();
+  const key = claveIngest();
+  if (!url || !key || !ALERTAS_ON) return false;
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-admin-key': key },
+      body: JSON.stringify({ source: 'war-room', resolve: true, notify: false, ...evento }),
+      signal: AbortSignal.timeout(6000),
+    });
+    return r.ok;
+  } catch { return false; }
+}
+
+/**
+ * Un aviso emitido y su forma de cerrarlo, para no repetir el título en dos sitios (que
+ * es justo como se desincronizan y se acaba cerrando otra alerta o ninguna).
+ */
+function avisosDe(s) {
+  const g = s.git;
+  return [
+    {
+      cumple: s.status === 'waiting' && s.idle > UMBRAL.olvidada,
+      severity: 'warning', event_type: 'warroom_sesion_olvidada',
+      title: `Sesión olvidada en ${s.project}`,
+      message: `Lleva ${Math.round(s.idle / 3600)} h esperándote. Última acción: ${s.lead.last || '—'}`,
+      metadata: { sesion: s.id, proyecto: s.project, idle_s: Math.round(s.idle) },
+    },
+    {
+      cumple: !!(g?.sucios && g.ultimoCommit && now() - g.ultimoCommit > UMBRAL.sinGuardar),
+      severity: 'warning', event_type: 'warroom_trabajo_sin_guardar',
+      title: `Trabajo sin commitear en ${s.project}`,
+      message: `${g?.sucios} ficheros sueltos y el último commit es de hace ${Math.round((now() - (g?.ultimoCommit || 0)) / 3600)} h`,
+      metadata: { sesion: s.id, proyecto: s.project, sucios: g?.sucios },
+    },
+  ];
+}
+
 /** Umbrales de los cuatro avisos aprobados. */
 const UMBRAL = { olvidada: 3 * 3600, sinGuardar: 24 * 3600, atascado: 20 * 60 };
 let ALERTAS_ON = ajuste('WARROOM_ALERTAS') === '1';
@@ -838,22 +890,29 @@ let ALERTAS_ON = ajuste('WARROOM_ALERTAS') === '1';
 async function revisarAvisos() {
   if (!ALERTAS_ON) return;
   for (const s of sessions.values()) {
-    if (s.status === 'waiting' && s.idle > UMBRAL.olvidada) {
-      await emitir({
-        severity: 'warning', event_type: 'warroom_sesion_olvidada',
-        title: `Sesión olvidada en ${s.project}`,
-        message: `Lleva ${Math.round(s.idle / 3600)} h esperándote. Última acción: ${s.lead.last || '—'}`,
-        metadata: { sesion: s.id, proyecto: s.project, idle_s: Math.round(s.idle) },
-      });
-    }
-    const g = s.git;
-    if (g?.sucios && g.ultimoCommit && now() - g.ultimoCommit > UMBRAL.sinGuardar) {
-      await emitir({
-        severity: 'warning', event_type: 'warroom_trabajo_sin_guardar',
-        title: `Trabajo sin commitear en ${s.project}`,
-        message: `${g.sucios} ficheros sueltos y el último commit es de hace ${Math.round((now() - g.ultimoCommit) / 3600)} h`,
-        metadata: { sesion: s.id, proyecto: s.project, sucios: g.sucios },
-      });
+    /*
+      Los avisos de ESTADO se cierran solos cuando su condición desaparece. Hasta el
+      2026-08-06 solo se emitían: `warroom_trabajo_sin_guardar` acumulaba 6 abiertas y
+      CERO resueltas en toda su historia, porque commitear no se lo decía a nadie y la
+      única salida era el barrido de antigüedad, a los SIETE días.
+
+      Se cierra en la TRANSICIÓN, no en cada pasada: esto corre cada 3 s y llamar siempre
+      sería un POST por sesión y por aviso cada tres segundos para no hacer nada el 99,9%
+      de las veces. `yaAvisado` ya sabe qué se emitió, así que sirve de memoria.
+
+      Límite conocido y asumido: `yaAvisado` vive en memoria, así que un reinicio del panel
+      olvida lo emitido y esos avisos se quedan abiertos hasta el barrido de los 7 días.
+      Persistirlo costaría más de lo que arregla para un panel que se reinicia poco.
+    */
+    for (const av of avisosDe(s)) {
+      const clave = `${av.event_type}|${s.id}`;
+      const { cumple, ...evento } = av;
+      if (cumple) {
+        await emitir(evento);
+      } else if (yaAvisado.has(clave)) {
+        await resolver({ event_type: evento.event_type, title: evento.title });
+        yaAvisado.delete(clave);
+      }
     }
     for (const a of s.agents.values()) {
       if (!a.retired && a.last && now() - a.last > UMBRAL.atascado) {
