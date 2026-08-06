@@ -469,7 +469,17 @@ function pintarProduccion(d) {
       <div class="note" style="font-size:11px;line-height:1.45;margin-top:2px">${esc(m.mensaje || '')}</div>
     </div>`;
 
-  const alertas = (p.alertas_48h || []).map((a) => {
+  /* Las alertas también se acotan al proyecto en foco, no solo las barras de espacio:
+     abrir la sesión del un proyecto y seguir viendo `alertas_de_otro_producto` debajo es
+     exactamente el ruido que hace que un panel deje de leerse. El cruce alerta -> proyecto
+     lo calcula el grafo (`_proyecto_de_alerta`): el emisor NO sirve, porque casi todo lo
+     emite el centro de mando hablando de productos ajenos. Lo que el grafo no sabe clasificar
+     viene con `proyecto: null` y se enseña siempre, a propósito. */
+  const proyFoco = openId ? proyectoEnFoco() : null;
+  const listaAlertas = (p.alertas_48h || [])
+    .filter((a) => !proyFoco || !a.proyecto || a.proyecto === proyFoco);
+
+  const alertas = listaAlertas.map((a) => {
     const c = sev[a.severidad] || 'var(--txt-3)';
     const k = `${a.severidad}:${a.tipo}`;
     // Se muestran las abiertas; el total solo aparece si hay resueltas que explicar.
@@ -490,8 +500,13 @@ function pintarProduccion(d) {
     </details>`;
   }).join('');
 
-  $('prodnote').textContent =
-    `${p.instancias.length} instancias · ${p.alertas_abiertas} alertas abiertas en 48 h`;
+  // La nota cuenta lo que se está ENSEÑANDO, no el total del ecosistema: si dice 104 con
+  // 41 en pantalla, el panel se contradice a sí mismo y deja de ser fiable.
+  const abiertasVisibles = listaAlertas.reduce((n, a) => n + (a.abiertas || 0), 0);
+  $('prodnote').textContent = proyFoco
+    ? `${proyFoco} · ${instancias.length === 1 ? 'su instancia' : instancias.length + ' instancias'}`
+      + ` · ${abiertasVisibles} alertas abiertas en 48 h`
+    : `${instancias.length} instancias · ${abiertasVisibles} alertas abiertas en 48 h`;
   $('prod').innerHTML = `
     ${barras}
     <div class="note" style="margin:12px 0 6px;font-size:11px">
@@ -515,6 +530,11 @@ async function pintarGrafo() {
   pintarProduccion(d);
 
   const u = d.uso, s = d.salud;
+  /* Con una sesión abierta, este panel habla de ELLA: cuántas veces ha consultado el grafo
+     y qué preguntó. El total del ecosistema no dice nada del trabajo que tienes delante.
+     `query_log.sesion` existe desde el 2026-08-06, así que lo anterior sale como "antes de
+     medirse" en vez de contarse como cero, que sería mentir por omisión. */
+  const misConsultas = openId && u.por_sesion ? (u.por_sesion[openId] || 0) : null;
   // Semáforo honesto: lo que importa es el uso automático, no el total.
   const salud = u.desde_hooks === 0 ? '#E60076'
     : (u.ultimas_24h === 0 ? '#FFB547' : '#00E68C');
@@ -535,8 +555,10 @@ async function pintarGrafo() {
 
   $('grafo').innerHTML = `
     <div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start">
-      ${kpi(u.desde_hooks, 'consultas desde hooks', salud)}
-      ${kpi(u.ultimas_24h, 'en 24 h')}
+      ${openId
+        ? kpi(misConsultas, 'consultas de ESTA sesión', misConsultas ? '#00E68C' : '#FFB547')
+          + kpi(u.desde_hooks, 'desde hooks (todo)', salud)
+        : kpi(u.desde_hooks, 'consultas desde hooks', salud) + kpi(u.ultimas_24h, 'en 24 h')}
       ${kpi(u.total, 'total')}
       ${kpi(d.drift.rpc_fantasma + d.drift.tabla_fantasma, 'drift repo↔prod', '#FFB547')}
       ${viejo ? kpi(viejo, 'snapshots >7 d', '#E60076') : ''}
@@ -548,7 +570,12 @@ async function pintarGrafo() {
         ${v.verbo} <b class="tnum">${v.n}</b>
         <span style="opacity:.6">${v.origen}</span></span>`).join('')}
     </div>
-    <div class="list">${(u.ultimas || []).slice(0, 12).map((q) => `
+    <div class="list">${(u.ultimas || [])
+      // Con una sesión abierta, solo lo que preguntó ELLA. Si no ha preguntado nada aún,
+      // se deja el global antes que una lista vacía sin explicación.
+      .filter((q) => { const m = openId ? (u.ultimas || []).some((x) => x.sesion === openId) : false;
+                       return !m || q.sesion === openId; })
+      .slice(0, 12).map((q) => `
       <div style="display:flex;gap:10px;font-size:12px;padding:3px 0;border-bottom:1px solid #26223a">
         <span class="tnum note" style="width:52px">${hace(q.ts)}</span>
         <b style="width:74px">${q.verbo}</b>
