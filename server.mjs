@@ -45,6 +45,61 @@ async function leerGrafo() {
   }
 }
 
+/* IMPACT-OK: rama nueva en el router y dos constantes. No toca ninguna existente ni el
+ * contrato de `/api/grafo`. Consumidor: un boton nuevo en `public/app.js`. Sin produccion
+ * implicada: panel local que lee ficheros del grafo.
+ *
+ * El explorador (el grafo navegable, tipo vecindario) EXISTE en CORVERE_GRAPH desde el
+ * 2026-08-05 y nunca se cableo aqui. El motivo no se llego a escribir y conviene que
+ * quede: son 2,3 MB de HTML autocontenido, y las demas vistas viajan DENTRO del JSON que
+ * el panel recarga cada pocos segundos. Meterlo ahi habria multiplicado por treinta el
+ * peso de cada refresco para una vista que se abre de vez en cuando.
+ *
+ * Asi que se sirve aparte y bajo demanda: no lastra el panel y se regenera solo cuando el
+ * indice es mas nuevo que el dibujo. */
+const GRAFO_DIR = path.dirname(GRAFO_JSON);
+const EXPLORADOR_HTML = path.join(GRAFO_DIR, 'explorador.html');
+const GRAFO_CLI = path.join(GRAFO_DIR, '..', 'graph.py');
+
+async function explorador() {
+  const mtime = async (p) => { try { return (await fsp.stat(p)).mtimeMs; } catch { return 0; } };
+  const [dibujo, indice] = await Promise.all([
+    mtime(EXPLORADOR_HTML), mtime(path.join(GRAFO_DIR, 'graph.db')),
+  ]);
+  if (!indice) return null;                      // no hay grafo en esta maquina
+  if (!dibujo || dibujo < indice) {
+    // Regenerar es del orden de segundos. Se hace sincrono a proposito: quien pulsa el
+    // boton prefiere esperar a que salga bien antes que ver un dibujo de anteayer.
+    await new Promise((ok) => {
+      execFile('python3', [GRAFO_CLI, 'explorador'], { timeout: 60000 }, () => ok());
+    });
+  }
+  try {
+    return await fsp.readFile(EXPLORADOR_HTML);
+  } catch {
+    return null;
+  }
+}
+
+/* Las vistas del grafo acotadas a un proyecto. El cruce proyecto -> módulos lo hace el
+   grafo, no este panel: aquí solo se pide y se sirve. Cachecito en memoria porque abrir y
+   cerrar el detalle de la misma sesión no debería relanzar Python cada vez. */
+const CACHE_PIEZAS = new Map();
+const PIEZAS_TTL = 60000;
+
+async function piezasDe(proyecto) {
+  if (!proyecto) return null;
+  const hit = CACHE_PIEZAS.get(proyecto);
+  if (hit && Date.now() - hit.t < PIEZAS_TTL) return hit.v;
+  const salida = await new Promise((ok) => {
+    execFile('python3', [GRAFO_CLI, 'piezas', '--proyecto', proyecto, '--origen', 'warroom'],
+      { timeout: 30000, maxBuffer: 32 * 1024 * 1024 },
+      (err, stdout) => ok(err ? null : stdout));
+  });
+  if (salida) CACHE_PIEZAS.set(proyecto, { t: Date.now(), v: salida });
+  return salida;
+}
+
 const PORT = Number(process.env.WARROOM_PORT || 7777);
 const HOST = '127.0.0.1';
 
@@ -1191,6 +1246,24 @@ const server = http.createServer(async (req, res) => {
     const datos = await leerGrafo();
     res.writeHead(datos ? 200 : 404, { 'Content-Type': 'application/json; charset=utf-8' });
     return res.end(JSON.stringify(datos || { ausente: true }));
+  }
+  if (url.pathname === '/api/explorador') {
+    const html = await explorador();
+    if (!html) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end('sin grafo en esta maquina');
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(html);
+  }
+  /* Las vistas acotadas a UN proyecto, para el detalle de una sesión. Van bajo demanda y
+     no dentro de `warroom.json` porque serían 26 juegos de SVG en un fichero que el panel
+     recarga cada pocos segundos, y solo se mira uno cada vez. */
+  if (url.pathname === '/api/piezas') {
+    const proy = (url.searchParams.get('proyecto') || '').replace(/[^\w.-]/g, '').slice(0, 80);
+    const datos = await piezasDe(proy);
+    res.writeHead(datos ? 200 : 404, { 'Content-Type': 'application/json; charset=utf-8' });
+    return res.end(datos || JSON.stringify({ ausente: true }));
   }
 
   const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);

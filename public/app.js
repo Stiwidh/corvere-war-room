@@ -9,6 +9,18 @@ let state = { sessions: [], now: 0 };
 let openId = null;       // sesión abierta en detalle
 let verCerradas = false; // el cajón de las que ya no están
 
+/* Vistas del grafo acotadas al proyecto de la sesión abierta. Null en la vista de flota,
+   donde lo que toca es el ecosistema entero. Antes del 2026-08-06 los tres paneles de
+   abajo (grafo, producción, mapa del código) se quedaban en global al abrir una sesión,
+   porque `renderDetail` no los tocaba y quien los pinta corre en su propio intervalo sin
+   saber qué estás mirando. */
+let piezasProyecto = null;
+
+const proyectoEnFoco = () => {
+  const s = state.sessions.find((x) => x.id === openId);
+  return s ? s.project : null;
+};
+
 /* ── formato ── */
 function ago(sec) {
   if (sec == null || sec < 0) return '—';
@@ -98,6 +110,9 @@ function renderFleet(list) {
   $('detail').hidden = true; $('back').hidden = true;
   $('mapaPanel').hidden = false;
   $('b-replay').hidden = true;
+  // Se vuelve al ecosistema entero: si no se suelta, la flota seguiría enseñando el mapa
+  // y la producción del último proyecto que se abrió.
+  if (piezasProyecto) { piezasProyecto = null; pintarGrafo(); }
   if ($('mapaPanel').classList.contains('enfocado')) {
     $('mapaPanel').classList.remove('enfocado');
     setTimeout(() => Pulpos.medir(), 330);
@@ -154,6 +169,24 @@ function renderDetail(s) {
     setTimeout(() => Pulpos.medir(), 330);
   }
   $('dtitle').innerHTML = `${s.project} <span class="note">${s.cwd} · ${ESTADO[s.status]}${s.status === 'waiting' ? ' desde hace ' + ago(s.idle) : ''}</span>`;
+
+  /* Los paneles de abajo pasan a hablar de ESTE proyecto. Se piden una sola vez por
+     sesión abierta (el servidor además cachea 60 s), no en cada repintado: `renderDetail`
+     corre con cada latido del stream. */
+  if (!piezasProyecto || piezasProyecto.__proy !== s.project) {
+    piezasProyecto = null;
+    fetch(`/api/piezas?proyecto=${encodeURIComponent(s.project)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((v) => {
+        // Un proyecto sin código indexado (o un worktree) devuelve 0 módulos: en ese caso
+        // se deja el global antes que enseñar un panel vacío que parece roto.
+        if (!v || v.ausente || !v.treemap) return;
+        piezasProyecto = Object.assign(v, { __proy: s.project });
+        pintarGrafo();
+      })
+      .catch(() => {});
+    pintarGrafo();   // producción ya se acota sin esperar a las vistas
+  }
 
   const vivos = s.agents.filter((a) => !a.retired);
   const muertos = s.agents.filter((a) => a.retired);
@@ -389,10 +422,19 @@ function pintarProduccion(d) {
   if (!p || !p.instancias || !p.instancias.length) { $('prodPanel').hidden = true; return; }
   $('prodPanel').hidden = false;
 
+  /* Con una sesión abierta, solo su instancia. El cruce proyecto -> ref lo calcula el
+     grafo y viaja en `produccion.por_proyecto`: no se reimplementa aquí porque ya está
+     resuelto allí el caso que lo hace no trivial (por la palabra "suite" a secas, el CRM
+     Suite arrastraba a otro producto y el detalle mostraba los crons de otro producto).
+     Si el proyecto no tiene instancia propia (el War Room, NOVA sin base…), se enseña
+     todo: mejor el ecosistema que un panel vacío sin explicación. */
+  const refFoco = openId && p.por_proyecto ? p.por_proyecto[proyectoEnFoco()] : null;
+  const instancias = refFoco ? p.instancias.filter((i) => i.ref === refFoco) : p.instancias;
+
   const color = (pct) => (pct >= 80 ? 'var(--err)' : pct >= 60 ? 'var(--warn)' : 'var(--ok)');
   const sev = { critical: 'var(--err)', error: 'var(--err)', warning: 'var(--warn)', info: 'var(--txt-3)' };
 
-  const barras = p.instancias.map((i) => `
+  const barras = instancias.map((i) => `
     <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
       <span style="width:132px;font-size:12px;color:var(--txt-2)">${i.nombre}</span>
       <span class="tnum" style="width:62px;font-size:12px;text-align:right">${i.mb} MB</span>
@@ -535,12 +577,20 @@ const LEDE = {
     + '<i style="color:var(--err)">ciclo (se importan mutuamente)</i>'],
 };
 
+/* IMPACT-OK: mapeado a mano (sin subagente, no solicitado). Los "consumidores" que reporta
+   el gate (capturas.mjs, server.mjs) son un falso positivo por stem común: comprobado con
+   grep, ninguno de los dos importa este fichero — `server.mjs` solo lo SIRVE como estático
+   y `capturas.mjs` maneja el navegador. El único consumidor real es `public/index.html`
+   vía <script src>. Sin producción implicada: panel local, sin build ni bundler. */
 function pintarVistas(d){
-  const v = d && d.vistas;
+  // Si hay una sesión abierta, mandan sus piezas acotadas al proyecto sobre las globales:
+  // con el un proyecto delante, "dónde está el peso de TODO el ecosistema" no es la pregunta.
+  const v = (openId && piezasProyecto) || (d && d.vistas);
   if (!v || !v.treemap) { $('vistasPanel').hidden = true; return; }
   const s = v.stats || {};
+  const ambito = openId && piezasProyecto ? `${proyectoEnFoco()} · ` : '';
   $('vistasnote').textContent =
-    `${s.modulos} módulos · ${s.ficheros} ficheros · ${s.pares} dependencias · ${s.ciclos} ciclos`;
+    `${ambito}${s.modulos} módulos · ${s.ficheros} ficheros · ${s.pares} dependencias · ${s.ciclos} ciclos`;
   const [lede, ley] = LEDE[vistaActiva];
   const svg = vistaActiva === 'treemap'
     ? `<svg viewBox="0 0 1180 560">${v.treemap}</svg>`
@@ -556,6 +606,19 @@ document.getElementById('vtabs').addEventListener('click', async (e) => {
   if (!b) return;
   vistaActiva = b.dataset.v;
   try { const r = await fetch('/api/grafo'); if (r.ok) pintarVistas(await r.json()); } catch {}
+});
+
+/* El explorador navegable. Se abre aparte y no empotrado: son 2,3 MB con su propio motor
+   de dibujo, y el panel promete un refresco cada pocos segundos que no puede cargar con
+   eso. El servidor lo regenera solo si el índice es más nuevo que el dibujo. */
+$('b-explorador').addEventListener('click', () => {
+  const b = $('b-explorador');
+  const antes = b.textContent;
+  b.textContent = '🕸 generando…';           // puede tardar unos segundos la primera vez
+  b.disabled = true;
+  const w = window.open('/api/explorador', '_blank', 'noopener');
+  if (!w) b.textContent = '🕸 permite las ventanas emergentes';
+  setTimeout(() => { b.textContent = antes; b.disabled = false; }, 2500);
 });
 
 pintarGrafo();

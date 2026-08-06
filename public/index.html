@@ -316,6 +316,9 @@
         <button type="button" class="vtab on" data-v="treemap">dónde está el peso</button>
         <button type="button" class="vtab" data-v="matriz">quién depende de quién</button>
       </span>
+      <!-- El explorador navegable son 2,3 MB y se sirve aparte (/api/explorador), no
+           dentro del JSON que el panel recarga cada pocos segundos. -->
+      <button type="button" id="b-explorador" class="mini">🕸 explorar el grafo</button>
       <span class="note" id="vistasnote"></span></h2>
     <div id="vistas" style="padding:10px 14px 16px"></div>
   </section>
