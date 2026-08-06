@@ -610,13 +610,19 @@ document.getElementById('vtabs').addEventListener('click', async (e) => {
 
 /* El explorador navegable. Se abre aparte y no empotrado: son 2,3 MB con su propio motor
    de dibujo, y el panel promete un refresco cada pocos segundos que no puede cargar con
-   eso. El servidor lo regenera solo si el índice es más nuevo que el dibujo. */
+   eso. El servidor lo regenera solo si el índice es más nuevo que el dibujo.
+
+   Con una sesión abierta entra directo a SU proyecto (`#proyecto=`): si ya estabas
+   mirando el un proyecto, no tiene sentido soltarte en las 27 tarjetas del ecosistema para
+   que lo busques otra vez. */
 $('b-explorador').addEventListener('click', () => {
   const b = $('b-explorador');
   const antes = b.textContent;
   b.textContent = '🕸 generando…';           // puede tardar unos segundos la primera vez
   b.disabled = true;
-  const w = window.open('/api/explorador', '_blank', 'noopener');
+  const proy = openId ? proyectoEnFoco() : null;
+  const url = '/api/explorador' + (proy ? `#proyecto=${encodeURIComponent(proy)}` : '');
+  const w = window.open(url, '_blank', 'noopener');
   if (!w) b.textContent = '🕸 permite las ventanas emergentes';
   setTimeout(() => { b.textContent = antes; b.disabled = false; }, 2500);
 });
