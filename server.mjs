@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 
 const HOME = os.homedir();
 // eslint-disable-next-line no-unused-vars -- lo usa claveIngest()
@@ -812,6 +812,45 @@ const claveIngest = () => ajuste('WARROOM_ALERT_KEY', 'OPS_ADMIN_KEY');
 const yaAvisado = new Map();     // clave -> cuándo se avisó
 const REPETIR = 6 * 3600;        // no repetir el mismo aviso antes de 6 h
 
+/*
+ * El filtro de 6 h SOBREVIVE al reinicio del panel.
+ *
+ * Vivía solo en memoria, con el argumento escrito de que "persistirlo costaría
+ * más de lo que arregla para un panel que se reinicia poco". La premisa era
+ * falsa del revés: se reinicia poco cuando todo va bien, y muchísimo justo
+ * cuando el filtro importa. El 2026-08-05 el puerto 7777 se quedó ocupado por un
+ * proceso anterior, el arranque murió con EADDRINUSE y systemd lo reintentó
+ * cada 33 segundos: 991 reinicios en 9 horas, cada uno estrenando memoria. De
+ * ahí salieron 876 emisiones del mismo aviso, casi una por arranque.
+ *
+ * Fuera del repo (es estado de la máquina, no código) y sin dependencias: un
+ * JSON diminuto que se reescribe solo cuando algo entra o sale del filtro, o
+ * sea como mucho una vez cada 6 h por aviso.
+ */
+const MEMORIA_AVISOS = path.join(HOME, '.local', 'state', 'warroom', 'avisos-emitidos.json');
+
+function cargarMemoriaDeAvisos() {
+  let crudo;
+  try { crudo = fs.readFileSync(MEMORIA_AVISOS, 'utf8'); } catch { return; }
+  let guardado;
+  try { guardado = JSON.parse(crudo); } catch { return; }  // fichero a medias: se empieza limpio
+  if (!guardado || typeof guardado !== 'object') return;
+  const ahora = now();
+  for (const [clave, cuando] of Object.entries(guardado)) {
+    // Lo caducado no se recarga: no tiene efecto y solo haría crecer el fichero.
+    if (typeof cuando === 'number' && ahora - cuando < REPETIR) yaAvisado.set(clave, cuando);
+  }
+}
+
+function guardarMemoriaDeAvisos() {
+  const datos = JSON.stringify(Object.fromEntries(yaAvisado));
+  fsp.mkdir(path.dirname(MEMORIA_AVISOS), { recursive: true })
+    .then(() => fsp.writeFile(MEMORIA_AVISOS, datos))
+    .catch(() => {});  // sin disco, el filtro degrada a lo de antes; no tumba el panel
+}
+
+cargarMemoriaDeAvisos();
+
 /** Manda un aviso al endpoint configurado. Sin URL o sin clave, no hace nada. */
 async function emitir(evento) {
   const url = urlIngest();
@@ -820,6 +859,7 @@ async function emitir(evento) {
   const clave = `${evento.event_type}|${evento.metadata?.sesion || ''}`;
   if (now() - (yaAvisado.get(clave) || 0) < REPETIR) return false;
   yaAvisado.set(clave, now());
+  guardarMemoriaDeAvisos();
   try {
     const r = await fetch(url, {
       method: 'POST',
@@ -923,9 +963,9 @@ async function revisarAvisos() {
       sería un POST por sesión y por aviso cada tres segundos para no hacer nada el 99,9%
       de las veces. `yaAvisado` ya sabe qué se emitió, así que sirve de memoria.
 
-      Límite conocido y asumido: `yaAvisado` vive en memoria, así que un reinicio del panel
-      olvida lo emitido y esos avisos se quedan abiertos hasta el barrido de los 7 días.
-      Persistirlo costaría más de lo que arregla para un panel que se reinicia poco.
+      `yaAvisado` se persiste en disco desde el 2026-08-09 (ver MEMORIA_AVISOS), así que
+      un reinicio ya no olvida lo emitido ni deja el aviso abierto hasta el barrido de los
+      7 días. Antes sí, y eso convirtió un crash-loop de 991 arranques en 876 avisos.
     */
     for (const av of avisosDe(s)) {
       const clave = `${av.event_type}|${s.id}`;
@@ -939,6 +979,7 @@ async function revisarAvisos() {
       } else if (yaAvisado.has(clave)) {
         await resolver({ event_type: evento.event_type, title: evento.title });
         yaAvisado.delete(clave);
+        guardarMemoriaDeAvisos();
       }
     }
     for (const a of s.agents.values()) {
@@ -1382,6 +1423,29 @@ setInterval(() => {
 }, PUSH_MS);
 
 await tick();
+/*
+ * Un arranque que falla dice POR QUÉ y QUIÉN lo impide.
+ *
+ * El 2026-08-05 alguien dejó un `node server.mjs` a mano ocupando el 7777. El
+ * servicio murió con un stack trace de EADDRINUSE, systemd lo reintentó cada 3
+ * segundos y así 991 veces durante 9 horas. Nueve horas de panel caído en las
+ * que el log repetía un volcado de `node:net` que no nombra al culpable, así
+ * que hacía falta ir a buscarlo con `ss` para entender nada.
+ */
+server.on('error', (e) => {
+  if (e?.code !== 'EADDRINUSE') throw e;
+  let quien = '';
+  try {
+    quien = execFileSync('ss', ['-lptnH', `sport = :${PORT}`],
+                         { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch { /* sin ss, nos quedamos con el mensaje base */ }
+  console.error(`El puerto ${PORT} ya está ocupado, así que el panel no puede arrancar.`);
+  console.error(quien
+    ? `Lo tiene: ${quien}\nSi es un arranque a mano, mátalo y el servicio entrará solo.`
+    : `Mira quién lo tiene con: ss -lptn 'sport = :${PORT}'`);
+  process.exit(1);
+});
+
 server.listen(PORT, HOST, () => {
   const n = sessions.size;
   console.log(`Corvere War Room  ·  http://${HOST}:${PORT}`);
