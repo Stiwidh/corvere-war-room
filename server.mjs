@@ -865,6 +865,26 @@ async function resolver(evento) {
  */
 function avisosDe(s) {
   const g = s.git;
+  /*
+   * IMPACT-OK: fichero del servidor del panel, nadie lo importa (verificado con
+   * grep). Solo cambia cuándo se emite y cuándo se cierra un aviso; no toca el
+   * pipeline de alertas, que sigue siendo el POST a `ingest-alert`.
+   *
+   * "No he podido mirarlo" NO es "ya no pasa". `estadoGit` devuelve null cuando
+   * git no responde (timeout de 4 s, carga, un `index.lock` de otra sesión), y
+   * eso hacía que `cumple` pasara a false, se resolviera el aviso y se BORRARA
+   * `yaAvisado`. Tres segundos después git contestaba, la condición volvía a
+   * cumplirse y, sin memoria, se emitía otra vez: el filtro de 6 h no llegaba a
+   * aplicarse nunca.
+   *
+   * Medido en producción el 2026-08-09: 2.140 repeticiones en 890 minutos (2,41
+   * por minuto) del mismo aviso, y una alerta muriendo a las 14:14 para renacer
+   * a las 14:15. Con el servicio 2 días sin reiniciarse, o sea con la memoria
+   * intacta. El hecho era cierto (25 ficheros sin commitear desde hacía 62 h);
+   * lo roto era repetirlo cada 25 segundos, que es lo que enseña a no mirar
+   * (§0.34 del Suite, misma idea).
+   */
+  const noSeHaPodidoMirarElRepo = g === null || g === undefined;
   return [
     {
       cumple: s.status === 'waiting' && s.idle > UMBRAL.olvidada,
@@ -874,7 +894,10 @@ function avisosDe(s) {
       metadata: { sesion: s.id, proyecto: s.project, idle_s: Math.round(s.idle) },
     },
     {
-      cumple: !!(g?.sucios && g.ultimoCommit && now() - g.ultimoCommit > UMBRAL.sinGuardar),
+      // null = no se sabe. Ni se emite ni se cierra hasta que git conteste.
+      cumple: noSeHaPodidoMirarElRepo
+        ? null
+        : !!(g.sucios && g.ultimoCommit && now() - g.ultimoCommit > UMBRAL.sinGuardar),
       severity: 'warning', event_type: 'warroom_trabajo_sin_guardar',
       title: `Trabajo sin commitear en ${s.project}`,
       message: `${g?.sucios} ficheros sueltos y el último commit es de hace ${Math.round((now() - (g?.ultimoCommit || 0)) / 3600)} h`,
@@ -907,6 +930,10 @@ async function revisarAvisos() {
     for (const av of avisosDe(s)) {
       const clave = `${av.event_type}|${s.id}`;
       const { cumple, ...evento } = av;
+      // `null` es "no se ha podido comprobar", que no es lo mismo que "ya no
+      // pasa". Cerrar por no haber podido mirar borraba la memoria del filtro y
+      // convertía un aviso legítimo en 2,41 repeticiones por minuto.
+      if (cumple === null) continue;
       if (cumple) {
         await emitir(evento);
       } else if (yaAvisado.has(clave)) {
