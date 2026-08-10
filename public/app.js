@@ -479,7 +479,26 @@ function pintarProduccion(d) {
   const listaAlertas = (p.alertas_48h || [])
     .filter((a) => !proyFoco || !a.proyecto || a.proyecto === proyFoco);
 
-  const alertas = listaAlertas.map((a) => {
+  /* IMPACT-OK: mapeado a mano (sin subagente, no solicitado). `app.js` es el script
+   * del navegador, servido como estático: nadie lo importa. Los dos "consumidores"
+   * que reporta el gate son ruido de stem común, verificado con grep (`server.mjs`
+   * solo lo nombra en un comentario y `capturas.mjs` no lo referencia). Dentro del
+   * fichero, `listaAlertas` se usa en tres sitios y los tres están en este bloque.
+   * Sin producción implicada: panel local que lee un JSON.
+   *
+   * ─── LO QUE SE ARREGLA ──────────────────────────────────────────────────────
+   * Se pintaban los veinte tipos de las últimas 48 h aunque estuvieran todos a cero,
+   * así que después de limpiar el centro de mando el panel seguía igual de largo y había
+   * que leer fila por fila el número de la izquierda para ver que no quedaba nada.
+   * Una lista donde el 95 % no pide ninguna acción enseña a no mirarla, que es lo
+   * contrario de para lo que está (§0.34).
+   *
+   * El historial NO se tira: sigue entero un clic más abajo. Lo que cambia es qué
+   * aparece sin pedirlo. */
+  const conAbiertas = listaAlertas.filter((a) => (a.abiertas || 0) > 0);
+  const yaResueltas = listaAlertas.filter((a) => !(a.abiertas || 0));
+
+  const pintar = (a) => {
     const c = sev[a.severidad] || 'var(--txt-3)';
     const k = `${a.severidad}:${a.tipo}`;
     // Se muestran las abiertas; el total solo aparece si hay resueltas que explicar.
@@ -498,7 +517,29 @@ function pintarProduccion(d) {
       ${(a.muestras || []).map(muestra).join('') ||
         '<div class="note" style="padding:6px 0 6px 44px;font-size:11px">sin detalle en el snapshot</div>'}
     </details>`;
-  }).join('');
+  };
+
+  /* Un vacío que no se explica se lee como que algo falla al cargar, así que se dice
+   * lo que es: no hay nada abierto. Y solo cuando de verdad hubo alertas en la
+   * ventana, para no felicitar a nadie por un panel que no ha podido leer el JSON. */
+  const alertas = conAbiertas.length
+    ? conAbiertas.map(pintar).join('')
+    : (listaAlertas.length
+        ? `<div class="note" style="padding:6px 0;font-size:11px">nada abierto en 48 h</div>`
+        : '');
+
+  /* Lo resuelto queda a un clic, no en pantalla. Sin este resumen habría que fiarse
+   * de que el filtro de arriba no se ha comido nada, y esa duda es la que hace que
+   * un panel deje de usarse. */
+  const historial = yaResueltas.length ? `
+    <details class="alerta"${abierto.has('resueltas') ? ' open' : ''} data-k="resueltas">
+      <summary style="display:flex;gap:10px;font-size:11px;padding:3px 0;
+                      border-bottom:1px solid var(--line-soft);cursor:pointer;color:var(--txt-3)">
+        <span class="tnum" style="width:34px;text-align:right">${yaResueltas.length}</span>
+        <span style="flex:1">tipos ya resueltos en 48 h</span>
+      </summary>
+      ${yaResueltas.map(pintar).join('')}
+    </details>` : '';
 
   // La nota cuenta lo que se está ENSEÑANDO, no el total del ecosistema: si dice 104 con
   // 41 en pantalla, el panel se contradice a sí mismo y deja de ser fiable.
@@ -513,7 +554,8 @@ function pintarProduccion(d) {
       ALERTAS 48 H — las emite el centro de mando, que es el centro de mando. Aquí solo se miran.
       El número es lo que sigue ABIERTO; pulsa una para ver el detalle.
     </div>
-    ${alertas}`;
+    ${alertas}
+    ${historial}`;
 }
 
 async function pintarGrafo() {

@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 
 const HOME = os.homedir();
 // eslint-disable-next-line no-unused-vars -- lo usa claveIngest()
@@ -37,9 +37,59 @@ const PUBLIC = path.join(import.meta.dirname, 'public');
 const GRAFO_JSON = process.env.WARROOM_GRAFO_JSON ||
   path.join(import.meta.dirname, '..', 'CORVERE_GRAPH', 'data', 'warroom.json');
 
+/* Cada cuánto se vuelve a preguntar por las alertas del centro de mando.
+ *
+ * IMPACT-OK: dos constantes y una función nuevas dentro de `leerGrafo`, que es el
+ * único punto por el que el panel obtiene el grafo (grep: lo llama `/api/grafo`).
+ * No cambia su contrato: sigue devolviendo el JSON o null. Lo único que añade es un
+ * disparo en segundo plano, calcado de `graph.py cmd_refrescar_si_toca`.
+ *
+ * POR QUÉ 10 MINUTOS Y NO LAS 6 HORAS DEL RESTO: la foto de producción se rehace
+ * entera muy de tarde en tarde, y con razón, porque son 7 instancias y ~10 s para
+ * refrescar tamaños, crons y Edge Functions que cambian una vez al día. Pero las
+ * alertas cambian cada pocos minutos, y compartían esa cadencia. Resultado, el
+ * 2026-08-10: el usuario purgó las alertas en el centro de mando y este panel siguió
+ * enseñando 39 abiertas cuando en la base quedaba 1. No era un fallo de la purga:
+ * el número grande de la izquierda parece un dato en vivo y era una foto de hacía
+ * casi cuatro horas.
+ *
+ * Refrescar solo las alertas es UNA consulta contra UNA instancia: 2,3 s medidos.
+ * Por eso puede ir a esta cadencia sin arrastrar al resto del snapshot. */
+const ALERTAS_TTL_MIN = 10;
+const ALERTAS_ESTADO = path.join(
+  import.meta.dirname, '..', 'CORVERE_GRAPH', 'data', 'prod', '<ref-de-la-instancia>.estado.json');
+let refrescandoAlertas = false;
+
+async function refrescarAlertasSiTocan() {
+  // Un refresco a la vez: el panel recarga cada pocos segundos y sin esto lanzaría
+  // un proceso por recarga mientras el anterior sigue vivo.
+  if (refrescandoAlertas) return;
+  let marca;
+  try {
+    const snap = JSON.parse(await fsp.readFile(ALERTAS_ESTADO, 'utf8'));
+    marca = Date.parse(snap.alertas_actualizadas || '');
+  } catch {
+    return;                       // sin foto de producción (p. ej. fuera de esta máquina)
+  }
+  // Una marca ausente NO se trata como vieja: es una foto anterior a este cambio, y
+  // dispararía un refresco en cada arranque sin que nadie lo haya pedido.
+  if (!marca || Date.now() - marca < ALERTAS_TTL_MIN * 60_000) return;
+  refrescandoAlertas = true;
+  const hijo = spawn('python3', [GRAFO_CLI, 'alertas', '--refrescar'],
+    { stdio: 'ignore', detached: true });
+  hijo.on('exit', () => { refrescandoAlertas = false; });
+  hijo.on('error', () => { refrescandoAlertas = false; });
+  hijo.unref();
+}
+
 async function leerGrafo() {
   try {
-    return JSON.parse(await fsp.readFile(GRAFO_JSON, 'utf8'));
+    const datos = JSON.parse(await fsp.readFile(GRAFO_JSON, 'utf8'));
+    // Después de leer, nunca antes: el panel no se queda esperando a la consulta.
+    // Lo que se enseña ahora puede ser de hace diez minutos; lo que no puede es ser
+    // de hace cuatro horas sin que nadie vuelva a preguntar.
+    void refrescarAlertasSiTocan();
+    return datos;
   } catch {
     return null;
   }
