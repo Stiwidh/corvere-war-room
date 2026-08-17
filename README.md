@@ -7,8 +7,13 @@ mismo y quién habla con quién.
 
 Solo lectura: no escribe nada dentro de `~/.claude`.
 
-Sin dependencias: Node 20 o más nuevo y nada más. No hay `npm install` que valga,
-ni en el servidor ni en el navegador.
+**Sin dependencias: Node 20.11 o más nuevo y nada más.** No hay `npm install` que valga, ni
+en el servidor ni en el navegador.
+
+El 20.11 no es capricho ni redondeo: `import.meta.dirname`, que el servidor usa para
+encontrar sus propios ficheros, llegó en **20.11.0** (y en 21.2.0). Con un Node 20.5 esto
+arranca y luego falla con un `TypeError` que no dice nada del problema, así que el servidor
+lo comprueba al arrancar y te lo dice en una línea. Si andas corto: `nvm install 22`.
 
 Lo que el panel no trae hecho (dónde mandar los avisos, de dónde sacar el grafo de tu
 código) **viene especificado**, no a medias: cada documento de `docs/` es el contrato

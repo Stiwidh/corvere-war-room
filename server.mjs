@@ -15,6 +15,25 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 
+/*
+ * Node 20.11 como mínimo, y el número importa: `import.meta.dirname` (que usa la línea de
+ * abajo para encontrar `public/`) se añadió en 20.11.0 y 21.2.0, no en 20.0. Verificado
+ * contra la documentación oficial, no de memoria.
+ *
+ * Sin esta comprobación, un Node 20.0 a 20.10 arranca y revienta con
+ * `TypeError [ERR_INVALID_ARG_TYPE]: The "paths[0]" argument must be of type string`,
+ * que no dice absolutamente nada del problema real. Decir "hace falta 20.11" cuesta seis
+ * líneas y ahorra media hora de buscar por qué no encuentra los ficheros estáticos.
+ */
+const [MAYOR, MENOR] = process.versions.node.split('.').map(Number);
+if (MAYOR < 20 || (MAYOR === 20 && MENOR < 11) || (MAYOR === 21 && MENOR < 2)) {
+  console.error(
+    `War Room necesita Node 20.11 o más nuevo, y este es el ${process.versions.node}.\n` +
+    'El motivo concreto: `import.meta.dirname`, que llegó en 20.11.0 y 21.2.0.\n' +
+    'Con nvm:  nvm install 22 && nvm use 22');
+  process.exit(1);
+}
+
 const HOME = os.homedir();
 // eslint-disable-next-line no-unused-vars -- lo usa claveIngest()
 const PROJECTS = path.join(HOME, '.claude', 'projects');

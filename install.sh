@@ -12,9 +12,14 @@ UNIT="$DESTINO/warroom.service"
 CONF="$HOME/.config/warroom/env"
 
 # ── requisitos ──────────────────────────────────────────────────────────────
-command -v node >/dev/null || { echo "Hace falta Node 20 o más nuevo." >&2; exit 1; }
-MAYOR="$(node -p 'process.versions.node.split(".")[0]')"
-[ "$MAYOR" -ge 20 ] || { echo "Node $MAYOR es demasiado viejo, hace falta 20+." >&2; exit 1; }
+# 20.11 y no 20 a secas: `import.meta.dirname`, que el servidor usa para localizar
+# `public/`, llegó en 20.11.0 y 21.2.0. Con un 20.5 el panel arranca y falla con un
+# TypeError que no dice nada. Comprobar solo la major dejaba pasar justo ese caso.
+command -v node >/dev/null || { echo "Hace falta Node 20.11 o más nuevo." >&2; exit 1; }
+VERSION="$(node -p 'process.versions.node')"
+node -e 'const [a,b]=process.versions.node.split(".").map(Number);
+         process.exit(a>21||(a===21&&b>=2)||(a===20&&b>=11)?0:1)' \
+  || { echo "Node $VERSION es demasiado viejo, hace falta 20.11+ (o 21.2+)." >&2; exit 1; }
 
 if [ "$(uname -s)" != "Linux" ]; then
   echo "Esto instala un servicio de systemd, que es cosa de Linux."

@@ -27,17 +27,25 @@ $delSistema = Get-Command node -EA 0
 if (-not $portable -and -not $delSistema) {
   Write-Error @"
 No hay Node. Dos opciones:
-  a) Instalarlo:  https://nodejs.org  (hace falta 20 o mas nuevo)
+  a) Instalarlo:  https://nodejs.org  (hace falta 20.11 o mas nuevo)
   b) Portable, sin instalar nada: descarga el zip de Windows x64 de
      https://nodejs.org/en/download y descomprimelo AL LADO de este
      repositorio, dejando la carpeta node-v22.x.x-win-x64 tal cual.
 "@
 }
 
-if ($delSistema) {
-  $mayor = [int]((node -p 'process.versions.node.split(".")[0]') 2>$null)
-  if ($mayor -and $mayor -lt 20) {
-    Write-Error "Node $mayor es demasiado viejo, hace falta 20 o mas nuevo."
+# 20.11 y no 20 a secas: `import.meta.dirname`, que el servidor usa para localizar
+# `public/`, llego en 20.11.0 y 21.2.0. Con un 20.5 el panel arranca y falla con un
+# TypeError que no dice nada. Mirar solo la major dejaba pasar justo ese caso.
+if ($delSistema -and -not $portable) {
+  $v = (node -p 'process.versions.node') 2>$null
+  if ($v) {
+    $p = $v.Split('.')
+    $mayor = [int]$p[0]; $menor = [int]$p[1]
+    $ok = ($mayor -gt 21) -or ($mayor -eq 21 -and $menor -ge 2) -or ($mayor -eq 20 -and $menor -ge 11)
+    if (-not $ok) {
+      Write-Error "Node $v es demasiado viejo, hace falta 20.11 o mas nuevo (o 21.2+)."
+    }
   }
 }
 

@@ -10,5 +10,5 @@
     "warroom": "node server.mjs",
     "open": "./abrir.sh"
   },
-  "engines": { "node": ">=20" }
+  "engines": { "node": ">=20.11" }
 }
