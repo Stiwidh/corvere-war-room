@@ -40,10 +40,15 @@ En resumen:
 
 | | |
 |---|---|
-| Lee | `~/.claude/projects` y el `git status` de tus repos, **solo lectura** |
-| Escribe | Un fichero con los avisos ya emitidos, en `~/.local/state/warroom/` |
+| Lee | `~/.claude/projects`, `tasks` y `teams` |
+| Ejecuta | Cuatro comandos git de solo lectura sobre tus repos: `rev-parse`, `status --porcelain`, `rev-list --count` y `log -1` |
+| Escribe | Un fichero con los avisos ya emitidos, en `~/.local/state/warroom/`. Nada más |
 | Manda por la red | Nada, salvo que enciendas los [avisos](docs/ALERTAS.md), y entonces a **tu** endpoint |
 | Nunca toca | Tu código, tus commits, ni nada dentro de `~/.claude` |
+
+Si además configuras el [grafo](docs/GRAFO.md), el panel puede lanzar **tu** indexador para
+regenerar su vista. Es el único caso en que ejecuta algo que no sea git, y solo porque se
+lo has pedido tú.
 
 ## Dónde funciona
 
