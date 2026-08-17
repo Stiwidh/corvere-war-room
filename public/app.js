@@ -1,4 +1,4 @@
-/* Corvere War Room — cliente. Pinta la flota y el detalle de una sesión. */
+/* Corvere War Room, cliente. Pinta la flota y el detalle de una sesión. */
 
 const $ = (id) => document.getElementById(id);
 
@@ -23,7 +23,7 @@ const proyectoEnFoco = () => {
 
 /* ── formato ── */
 function ago(sec) {
-  if (sec == null || sec < 0) return '—';
+  if (sec == null || sec < 0) return '-';
   if (sec < 60) return `${Math.round(sec)} s`;
   if (sec < 3600) return `${Math.round(sec / 60)} min`;
   if (sec < 86400) { const h = Math.floor(sec / 3600); const m = Math.round((sec % 3600) / 60); return m ? `${h} h ${m} min` : `${h} h`; }
@@ -203,7 +203,7 @@ function renderDetail(s) {
       ${s.hasTeam ? '<span style="color:var(--accent-soft)">equipo</span>' : ''}
       <span>arrancó ${ago(state.now - s.startedAt)} atrás</span>
     </div>
-    <div class="cleft"><span class="l">dónde lo dejaste</span>${s.lead.last || '—'}</div>
+    <div class="cleft"><span class="l">dónde lo dejaste</span>${s.lead.last || '-'}</div>
     <div class="cstats">
       <div class="cstat"><span class="l">acciones</span><span class="v tnum">${num(s.acts)}</span></div>
       <div class="cstat"><span class="l">tokens</span><span class="v tnum">${num(s.toks)}</span></div>
@@ -403,14 +403,21 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /*
-  Las instancias Supabase y las alertas vivas del centro de mando.
+  Las instancias Supabase y las alertas vivas que llegan del snapshot.
+
+  IMPACT-OK: cambio de COMENTARIO, cero código ejecutable. Mapeado a mano sobre un repo
+  de 17 ficheros: los dos consumidores que reporta el gate (`capturas.mjs`, `server.mjs`)
+  son el falso positivo por stem común que este mismo fichero ya documenta más abajo
+  (server.mjs solo lo SIRVE como estático, no lo importa). Nada que verificar en
+  producción: es un panel local de solo lectura y no hay nada desplegado.
 
   Dos decisiones de diseño que no son estéticas:
 
   1. El porcentaje es contra el techo de SU plan, y por eso el plan se muestra al lado.
-     Free son 500 MB y Pro 8 GB por proyecto: con un techo único, otra instancia (Pro)
+     Free son 500 MB y Pro 8 GB por proyecto: con un techo único, una instancia de pago
      salía al 84% en rojo estando al 5%, y esa alarma falsa tapaba la única de verdad,
-     la del un proyecto en Free. Un panel que grita por lo que no importa deja de mirarse.
+     la de una gratuita a punto de llenarse. Un panel que grita por lo que no importa
+     deja de mirarse.
      La barra se pinta siempre, incluso al 4%, porque lo que importa no es el número de
      hoy sino a qué velocidad sube, y eso solo se ve comparando.
   2. Las alertas van agrupadas por tipo y no una a una. 153 eventos en 48 h en lista
@@ -424,10 +431,10 @@ function pintarProduccion(d) {
 
   /* Con una sesión abierta, solo su instancia. El cruce proyecto -> ref lo calcula el
      grafo y viaja en `produccion.por_proyecto`: no se reimplementa aquí porque ya está
-     resuelto allí el caso que lo hace no trivial (por la palabra "suite" a secas, el CRM
-     Suite arrastraba a otro producto y el detalle mostraba los crons de otro producto).
-     Si el proyecto no tiene instancia propia (el War Room, NOVA sin base…), se enseña
-     todo: mejor el ecosistema que un panel vacío sin explicación. */
+     resuelto allí el caso que lo hace no trivial (dos productos que comparten una palabra
+     en el nombre se arrastraban el uno al otro, y el detalle mostraba los crons ajenos).
+     Si el proyecto no tiene instancia propia (este mismo panel, o uno sin base de datos),
+     se enseña todo: mejor el ecosistema que un panel vacío sin explicación. */
   const refFoco = openId && p.por_proyecto ? p.por_proyecto[proyectoEnFoco()] : null;
   const instancias = refFoco ? p.instancias.filter((i) => i.ref === refFoco) : p.instancias;
 
@@ -449,7 +456,7 @@ function pintarProduccion(d) {
 
   /*
     Cada tipo se despliega con un clic y enseña hasta 3 avisos reales: título, mensaje y
-    si sigue abierto. Es lo que convierte la lista en algo accionable — "64
+    si sigue abierto. Es lo que convierte la lista en algo accionable: "64
     automation_hidden_failure" no dice nada, pero "56 ya resueltas y estas 8 siguen
     vivas, en la ejecución 1e007cd4" sí.
 
@@ -470,10 +477,10 @@ function pintarProduccion(d) {
     </div>`;
 
   /* Las alertas también se acotan al proyecto en foco, no solo las barras de espacio:
-     abrir la sesión del un proyecto y seguir viendo `alertas_de_otro_producto` debajo es
+     abrir la sesión de un producto y seguir viendo debajo las alertas de otro es
      exactamente el ruido que hace que un panel deje de leerse. El cruce alerta -> proyecto
-     lo calcula el grafo (`_proyecto_de_alerta`): el emisor NO sirve, porque casi todo lo
-     emite el centro de mando hablando de productos ajenos. Lo que el grafo no sabe clasificar
+     lo calcula el grafo (`_proyecto_de_alerta`): el emisor NO sirve, porque un mismo
+     sistema central emite alertas de productos ajenos. Lo que el grafo no sabe clasificar
      viene con `proyecto: null` y se enseña siempre, a propósito. */
   const proyFoco = openId ? proyectoEnFoco() : null;
   const listaAlertas = (p.alertas_48h || [])
@@ -488,7 +495,7 @@ function pintarProduccion(d) {
    *
    * ─── LO QUE SE ARREGLA ──────────────────────────────────────────────────────
    * Se pintaban los veinte tipos de las últimas 48 h aunque estuvieran todos a cero,
-   * así que después de limpiar el centro de mando el panel seguía igual de largo y había
+   * así que después de limpiar las alertas en su origen el panel seguía igual de largo y había
    * que leer fila por fila el número de la izquierda para ver que no quedaba nada.
    * Una lista donde el 95 % no pide ninguna acción enseña a no mirarla, que es lo
    * contrario de para lo que está (§0.34).
@@ -551,7 +558,7 @@ function pintarProduccion(d) {
   $('prod').innerHTML = `
     ${barras}
     <div class="note" style="margin:12px 0 6px;font-size:11px">
-      ALERTAS 48 H — las emite el centro de mando, que es el centro de mando. Aquí solo se miran.
+      ALERTAS 48 H: las emite quien las genera, que es el centro de mando. Aquí solo se miran.
       El número es lo que sigue ABIERTO; pulsa una para ver el detalle.
     </div>
     ${alertas}
@@ -648,12 +655,12 @@ const LEDE = {
 
 /* IMPACT-OK: mapeado a mano (sin subagente, no solicitado). Los "consumidores" que reporta
    el gate (capturas.mjs, server.mjs) son un falso positivo por stem común: comprobado con
-   grep, ninguno de los dos importa este fichero — `server.mjs` solo lo SIRVE como estático
+   grep, ninguno de los dos importa este fichero: `server.mjs` solo lo SIRVE como estático
    y `capturas.mjs` maneja el navegador. El único consumidor real es `public/index.html`
    vía <script src>. Sin producción implicada: panel local, sin build ni bundler. */
 function pintarVistas(d){
   // Si hay una sesión abierta, mandan sus piezas acotadas al proyecto sobre las globales:
-  // con el un proyecto delante, "dónde está el peso de TODO el ecosistema" no es la pregunta.
+  // con un proyecto delante, "dónde está el peso de TODO el ecosistema" no es la pregunta.
   const v = (openId && piezasProyecto) || (d && d.vistas);
   if (!v || !v.treemap) { $('vistasPanel').hidden = true; return; }
   const s = v.stats || {};
@@ -682,8 +689,8 @@ document.getElementById('vtabs').addEventListener('click', async (e) => {
    eso. El servidor lo regenera solo si el índice es más nuevo que el dibujo.
 
    Con una sesión abierta entra directo a SU proyecto (`#proyecto=`): si ya estabas
-   mirando el un proyecto, no tiene sentido soltarte en las 27 tarjetas del ecosistema para
-   que lo busques otra vez. */
+   mirando uno concreto, no tiene sentido soltarte en las tarjetas de todo el ecosistema
+   para que lo busques otra vez. */
 $('b-explorador').addEventListener('click', () => {
   const b = $('b-explorador');
   const antes = b.textContent;

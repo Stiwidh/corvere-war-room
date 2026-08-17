@@ -49,13 +49,50 @@ systemctl --user daemon-reload
 systemctl --user enable --now warroom.service
 systemctl --user restart warroom.service
 
+# ── la ventana, que se abre sola al iniciar sesión ──────────────────────────
+#
+# IMPACT-OK: bloque nuevo al final del script, no toca ninguna línea existente.
+# Nadie importa este fichero: lo ejecuta una persona a mano. Verificado contra las
+# DOS instalaciones reales, no contra el repo: en Linux el unit lleva 24 h activo
+# y el autostart existía a mano en `~/.config/autostart/warroom.desktop` sin estar
+# en el repositorio; en el Windows de referencia la pieza equivalente
+# (`warroom-inicio.vbs` en la carpeta de Inicio) también estaba solo en la máquina.
+# Esto porta la de Linux; la de Windows va en `windows/instalar.ps1`.
+#
+# El unit de arriba mantiene vivo el SERVIDOR; esto abre la VENTANA. Son dos
+# cosas distintas y por eso van por caminos distintos: systemd no tiene sesión
+# gráfica, así que la ventana la lanza el autostart del escritorio.
+#
+# El retardo de 10 s no es adorno: `abrir.sh` consulta xrandr y el área útil, y
+# al iniciar sesión el escritorio todavía está colocando paneles y monitores.
+#
+# Para quitar la ventana automática sin desmontar el panel:
+#   rm ~/.config/autostart/warroom.desktop
+AUTOSTART="$HOME/.config/autostart"
+mkdir -p "$AUTOSTART"
+cat > "$AUTOSTART/warroom.desktop" <<ESCRITORIO
+[Desktop Entry]
+Type=Application
+Name=War Room
+Comment=Panel en vivo de la flota de agentes de Claude Code
+Exec=$AQUI/abrir.sh
+Icon=utilities-system-monitor
+Terminal=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=10
+ESCRITORIO
+
 sleep 2
 if systemctl --user is-active --quiet warroom.service; then
   echo "War Room activo en http://127.0.0.1:7777"
   echo
-  echo "Abrir la ventana:   ./abrir.sh          (o ./abrir.sh derecha)"
-  echo "Ver el log:         journalctl --user -u warroom -f"
-  echo "Pararlo:            systemctl --user stop warroom"
+  echo "Arranca con el sistema, no con Claude Code: el panel sigue vivo aunque"
+  echo "no tengas ninguna sesión abierta, y la ventana se abre sola al entrar."
+  echo
+  echo "Abrir la ventana ya:  ./abrir.sh          (o ./abrir.sh derecha)"
+  echo "Ver el log:           journalctl --user -u warroom -f"
+  echo "Pararlo:              systemctl --user stop warroom"
+  echo "Quitar la ventana:    rm ~/.config/autostart/warroom.desktop"
 else
   echo "No ha arrancado. Mira el log:" >&2
   systemctl --user status warroom.service --no-pager || true

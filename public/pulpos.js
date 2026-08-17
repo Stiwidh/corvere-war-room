@@ -1,9 +1,16 @@
 /**
  * Mapa de pulpos: una sesión es una cabeza (su hilo principal) con tentáculos
- * (sus agentes). Nada está en posición fija — muelles, repulsión y flotación —,
+ * (sus agentes). Nada está en posición fija (muelles, repulsión y flotación),
  * y las sesiones del mismo repositorio comparten zona.
  *
  * No sabe nada de red: se le pasa el estado con sync() y él pinta.
+ *
+ * IMPACT-OK: limpieza de guiones largos, sin cambio de lógica. Mapeado a mano sobre
+ * un repo de 17 ficheros: esto es un script del navegador servido como estático y
+ * nadie lo importa (el consumidor que reporta el gate, `capturas.mjs`, es el mismo
+ * falso positivo por stem común que `app.js` ya documenta). Lo tocado son este
+ * comentario y dos placeholders de "sin dato" en el tooltip. Nada que verificar en
+ * producción: panel local de solo lectura, sin nada desplegado.
  */
 const Pulpos = (() => {
   const COL = { working:'#00E68C', agents:'#c084fc', waiting:'#FFB547', closed:'#5A5766' };
@@ -670,7 +677,7 @@ const Pulpos = (() => {
            <span class="l">estado</span> <span style="color:${COL[hover.estado]}">${ESTADO[hover.estado]}</span>
              ${hover.estado === 'waiting' ? 'desde hace ' + rato(hover.idle) : ''}<br>
            <span class="l">viva desde hace</span> ${rato((Date.now()/1000) - hover.desde)}<br>
-           <span class="l">dónde lo dejaste</span><br>${(hover.accion||'—').slice(0,70)}<br>
+           <span class="l">dónde lo dejaste</span><br>${(hover.accion||'-').slice(0,70)}<br>
            ${hover.git && (hover.git.sucios || hover.git.sinSubir)
              ? `<span class="l">sin guardar</span> <span style="color:#FFB547">${hover.git.sucios} ficheros${hover.git.sinSeguir ? ` (${hover.git.sinSeguir} nuevos)` : ''}</span>${hover.git.sinSubir ? ` · ${hover.git.sinSubir} commits sin subir` : ''}<br>` : ''}
            <span class="l">acciones</span> ${miles(hover.acts)} ·
@@ -682,7 +689,7 @@ const Pulpos = (() => {
            <span class="l">familia</span> <span style="color:${FAM[hover.fam].color||'#7ee787'}">${FAM[hover.fam].txt}</span><br>
            ${hover.tipo ? `<span class="l">tipo</span> ${hover.tipo}<br>` : ''}
            <span class="l">estado</span> ${hover.retirado ? 'retirado' : (hover.vivo ? 'trabajando' : 'parado')}<br>
-           <span class="l">ahora</span> ${(hover.accion||'—').slice(0,54)}<br>
+           <span class="l">ahora</span> ${(hover.accion||'-').slice(0,54)}<br>
            <span class="l">acciones</span> ${hover.acts||0} · ${((hover.toks||0)/1000).toFixed(0)}k tokens`;
     });
     c.addEventListener('mouseleave', () => { ficha.style.opacity = 0; hover = null; });

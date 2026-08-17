@@ -1,5 +1,5 @@
 /**
- * Corvere War Room — servidor.
+ * Corvere War Room, servidor.
  *
  * Descubre la flota de sesiones de Claude Code leyendo los transcripts JSONL,
  * decide si cada una está trabajando / esperándote / cerrada, y emite el estado
@@ -30,14 +30,14 @@ const PUBLIC = path.join(import.meta.dirname, 'public');
  *
  * El grafo del código (APPs/CORVERE_GRAPH) es OPCIONAL. Vive en un fichero JSON que
  * exporta él mismo, no en su SQLite: el README de este panel promete "Node 20 o más
- * nuevo y nada más", y `node:sqlite` no existe en Node 20. Si el fichero no está (por
- * ejemplo en el Windows de referencia, donde no hay grafo), esto devuelve null, la vista no
- * aparece y el War Room funciona exactamente igual que antes.
+ * nuevo y nada más", y `node:sqlite` no existe en Node 20. Si el fichero no está (que es
+ * el caso en cualquier máquina donde no se haya generado), esto devuelve null, la vista
+ * no aparece y el War Room funciona exactamente igual que antes.
  */
 const GRAFO_JSON = process.env.WARROOM_GRAFO_JSON ||
   path.join(import.meta.dirname, '..', 'CORVERE_GRAPH', 'data', 'warroom.json');
 
-/* Cada cuánto se vuelve a preguntar por las alertas del centro de mando.
+/* Cada cuánto se vuelve a preguntar por las alertas del sistema que las emite.
  *
  * IMPACT-OK: dos constantes y una función nuevas dentro de `leerGrafo`, que es el
  * único punto por el que el panel obtiene el grafo (grep: lo llama `/api/grafo`).
@@ -48,7 +48,7 @@ const GRAFO_JSON = process.env.WARROOM_GRAFO_JSON ||
  * entera muy de tarde en tarde, y con razón, porque son 7 instancias y ~10 s para
  * refrescar tamaños, crons y Edge Functions que cambian una vez al día. Pero las
  * alertas cambian cada pocos minutos, y compartían esa cadencia. Resultado, el
- * 2026-08-10: el usuario purgó las alertas en el centro de mando y este panel siguió
+ * 2026-08-10: se purgaron las alertas en el sistema de origen y este panel siguió
  * enseñando 39 abiertas cuando en la base quedaba 1. No era un fallo de la purga:
  * el número grande de la izquierda parece un dato en vivo y era una foto de hacía
  * casi cuatro horas.
@@ -56,14 +56,25 @@ const GRAFO_JSON = process.env.WARROOM_GRAFO_JSON ||
  * Refrescar solo las alertas es UNA consulta contra UNA instancia: 2,3 s medidos.
  * Por eso puede ir a esta cadencia sin arrastrar al resto del snapshot. */
 const ALERTAS_TTL_MIN = 10;
-const ALERTAS_ESTADO = path.join(
-  import.meta.dirname, '..', 'CORVERE_GRAPH', 'data', 'prod', '<ref-de-la-instancia>.estado.json');
+
+/* De dónde sale la foto de producción. Es OPCIONAL y va por variable de entorno, igual
+ * que `WARROOM_GRAFO_JSON`: la referencia de la instancia es de quien monta el panel, no
+ * de este código, y sin ella el panel de producción sencillamente no aparece.
+ *
+ * IMPACT-OK: la constante tiene un único consumidor (`refrescarAlertasSiTocan`, que la lee
+ * unas líneas más abajo) y nadie importa este fichero, es el servidor del panel. El
+ * contrato no cambia: si el fichero no está, la lectura falla como ya fallaba en cualquier
+ * máquina sin snapshot y la vista queda oculta. Sin producción implicada: es un panel local.
+ *
+ *   WARROOM_PROD_ESTADO=/ruta/al/<ref>.estado.json
+ */
+const ALERTAS_ESTADO = process.env.WARROOM_PROD_ESTADO || null;
 let refrescandoAlertas = false;
 
 async function refrescarAlertasSiTocan() {
   // Un refresco a la vez: el panel recarga cada pocos segundos y sin esto lanzaría
   // un proceso por recarga mientras el anterior sigue vivo.
-  if (refrescandoAlertas) return;
+  if (refrescandoAlertas || !ALERTAS_ESTADO) return;
   let marca;
   try {
     const snap = JSON.parse(await fsp.readFile(ALERTAS_ESTADO, 'utf8'));
@@ -294,7 +305,7 @@ async function readMission(file) {
         ? c
         : Array.isArray(c) ? c.map((b) => b?.text || '').join(' ') : '';
       // La primera línea suele ser la cabecera del framework y es idéntica para
-      // todos ("COUNCIL CORVERE — MODO RESOLVER"). Buscamos la que distingue.
+      // todos (del estilo "CONSEJO: MODO RESOLVER"). Buscamos la que distingue.
       const GENERIC = /^(council|eres |estás|tu (rol|misión|trabajo)|contexto|instrucciones|\*\*)/i;
       const cands = text.split('\n')
         .map((l) => l.replace(/^[#*\s>-]+/, '').replace(/\*\*/g, '').trim())
@@ -392,8 +403,8 @@ const DOC_TTL = 60;
 
 /**
  * El `_state.md` de cada proyecto lleva en su frontmatter el estado declarado
- * (🟢 producción, 🟡 activo, 🟠 stand-by...). Sin esto el panel trata igual a
- * PULSE, que está en producción con code freeze, que a un proyecto personal.
+ * (🟢 producción, 🟡 activo, 🟠 stand-by...). Sin esto el panel trata igual a un
+ * proyecto en producción y congelado que a uno personal recién empezado.
  */
 async function leerState(cwd) {
   const ya = docCache.get(cwd);
@@ -926,9 +937,9 @@ async function emitir(evento) {
  *
  * IMPACT-OK: función nueva. Mapeado a mano (sin subagente, no solicitado): nadie importa
  * este fichero, es el servidor del panel. Usa el MISMO endpoint que `emitir` con
- * `resolve: true`, así que no reimplementa el pipeline de alertas (regla del centro de mando:
- * nunca insertar ni tocar `system_alerts` directamente). Verificado en producción: la EF
- * `ingest-alert` vive en <ref-de-la-instancia> y ya acepta esta rama.
+ * `resolve: true`, así que no reimplementa el pipeline de alertas de nadie: el receptor
+ * es quien decide qué hacer con ellas, y nunca se escribe en su base directamente.
+ * Verificado contra un receptor real, que ya acepta esta rama.
  *
  * El `title` tiene que ser IDÉNTICO al de la emisión: `ingest-alert` deriva la clave de
  * deduplicación del title cuando el evento no trae una entidad propia, así que un texto
@@ -980,7 +991,7 @@ function avisosDe(s) {
       cumple: s.status === 'waiting' && s.idle > UMBRAL.olvidada,
       severity: 'warning', event_type: 'warroom_sesion_olvidada',
       title: `Sesión olvidada en ${s.project}`,
-      message: `Lleva ${Math.round(s.idle / 3600)} h esperándote. Última acción: ${s.lead.last || '—'}`,
+      message: `Lleva ${Math.round(s.idle / 3600)} h esperándote. Última acción: ${s.lead.last || '-'}`,
       metadata: { sesion: s.id, proyecto: s.project, idle_s: Math.round(s.idle) },
     },
     {
@@ -1427,8 +1438,33 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/api/explorador') {
     const html = await explorador();
     if (!html) {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-      return res.end('sin grafo en esta maquina');
+      // El botón se queda visible a propósito aunque no haya grafo: es la única
+      // pista de que esto existe. Pero "sin grafo" a secas no significa nada para
+      // quien acaba de clonar, así que la página explica qué es y cómo montárselo.
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(`<!doctype html><meta charset="utf-8">
+<title>Sin grafo en esta máquina</title>
+<style>
+ body{background:#0d0d10;color:#e8e8ec;font:15px/1.6 system-ui,sans-serif;
+      margin:0;display:grid;place-items:center;min-height:100vh}
+ main{max-width:34rem;padding:2rem}
+ h1{font-size:1.3rem;margin:0 0 1rem}
+ a{color:#e60076}
+ code{background:#1a1a20;padding:.1rem .35rem;border-radius:3px;font-size:.9em}
+</style>
+<main>
+<h1>🕸 Aquí no hay ningún grafo, y no pasa nada</h1>
+<p>El War Room puede dibujar además un <strong>grafo de tu código</strong>: qué módulos
+   hay, quién llama a quién y qué se rompe si tocas un fichero. Es opcional y el panel
+   funciona igual sin él.</p>
+<p>El grafo no viene incluido porque no hay uno que valga para todos los lenguajes ni
+   para todos los repositorios. Lo que el panel define es el <strong>formato</strong>:
+   si tu herramienta exporta un JSON con esa forma, esta vista se dibuja sola.</p>
+<p><a href="https://github.com/Stiwidh/corvere-war-room/blob/master/docs/GRAFO.md"
+      target="_blank" rel="noopener">Cómo montarte el tuyo, y cómo pedírselo a Claude</a></p>
+<p style="opacity:.6;font-size:.9em">Cuando lo tengas, apunta
+   <code>WARROOM_GRAFO_JSON</code> a ese fichero y recarga.</p>
+</main>`);
     }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(html);

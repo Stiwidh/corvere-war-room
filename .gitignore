@@ -3,7 +3,11 @@ node_modules/
 .DS_Store
 
 # Snapshots del grafo y de produccion. NUNCA al remoto: pueden llevar nombres de
-# proyecto, rutas, y el dia que exista el colector, agregados de produccion. El repo
-# tiene remoto publico y una PII filtrada sobrevive al `rm` (council 2026-08-05, riesgo).
+# proyecto, rutas y agregados de produccion. El repo esta pensado para acabar siendo
+# publico y una PII filtrada sobrevive al `rm` (council 2026-08-05, riesgo).
 data/
 *.jsonl
+
+# Documentacion interna de gobernanza: actas, decisiones y metricas de negocio. Se queda
+# en disco y no sube. Salio del historial con `git filter-repo` el 2026-08-17.
+_plan_of_record.md

@@ -10,6 +10,12 @@ Solo lectura: no escribe nada dentro de `~/.claude`.
 Sin dependencias: Node 20 o más nuevo y nada más. No hay `npm install` que valga,
 ni en el servidor ni en el navegador.
 
+Lo que el panel no trae hecho (dónde mandar los avisos, de dónde sacar el grafo de tu
+código) **viene especificado**, no a medias: cada documento de `docs/` es el contrato
+completo, con el formato exacto y un ejemplo que funciona. Están escritos para que puedas
+dárselos a Claude Code dentro de tu propio repositorio y que te construya la pieza que
+falta, en vez de tener que copiar la de nadie.
+
 ![El mapa de la flota](docs/mapa.png)
 
 Cada sesión es un pulpo: la cabeza es su hilo principal y los tentáculos sus
@@ -19,13 +25,25 @@ pasar por el líder.
 
 ---
 
-## Antes de nada: esto enseña todo tu trabajo
+## Qué hace con tus datos
 
-El panel lee los transcripts de Claude Code, así que muestra los nombres de tus
-proyectos, tus ramas, las tareas a medias y lo que escriben tus agentes. Por eso
-el servidor **escucha solo en `127.0.0.1` y además comprueba la cabecera `Host`**
-(ver [Seguridad](#seguridad)). Para verlo desde otro equipo, túnel SSH, nunca
-abriendo el puerto.
+**Nada sale de tu máquina.** El panel lee los transcripts de Claude Code que ya tienes en
+disco, los pinta, y ahí se acaba. No hay telemetría, ni servidor de nadie, ni cuenta que
+crear.
+
+Lo que sí conviene saber es que en esa pantalla salen los nombres de tus proyectos, tus
+ramas, las tareas a medias y lo que escriben tus agentes. Por eso el servidor **escucha
+solo en `127.0.0.1` y además comprueba la cabecera `Host`** (ver [Seguridad](#seguridad)).
+Para verlo desde otro equipo, túnel SSH, nunca abriendo el puerto.
+
+En resumen:
+
+| | |
+|---|---|
+| Lee | `~/.claude/projects` y el `git status` de tus repos, **solo lectura** |
+| Escribe | Un fichero con los avisos ya emitidos, en `~/.local/state/warroom/` |
+| Manda por la red | Nada, salvo que enciendas los [avisos](docs/ALERTAS.md), y entonces a **tu** endpoint |
+| Nunca toca | Tu código, tus commits, ni nada dentro de `~/.claude` |
 
 ## Dónde funciona
 
@@ -75,15 +93,30 @@ cerrada, y el panel lo dice en la barra en vez de callárselo.
 npm run warroom      # y abrir http://127.0.0.1:7777
 ```
 
-Eso vale en cualquier sistema. En Linux, para dejarlo como servicio de usuario
-que arranca solo al iniciar sesión y se reinicia si se cae:
+Eso vale en cualquier sistema y no instala nada. Para dejarlo montado de verdad:
 
 ```bash
-./install.sh
+./install.sh                                                  # Linux
+powershell -ExecutionPolicy Bypass -File windows\instalar.ps1  # Windows
 ```
 
-Es idempotente y genera el unit de systemd con la ruta de tu copia, así que se
-puede repetir sin miedo.
+Los dos son idempotentes, generan sus ficheros con la ruta de tu copia y se pueden repetir
+sin miedo. Dejan dos cosas montadas, que son distintas:
+
+- **El servidor**, vivo y reiniciándose solo si se cae. Servicio de usuario de systemd en
+  Linux, tarea programada en Windows.
+- **La ventana**, que se abre sola al iniciar sesión. Autostart del escritorio en Linux,
+  carpeta de Inicio en Windows.
+
+**Arranca con el sistema, no con Claude Code.** El panel sigue vivo aunque no tengas
+ninguna sesión abierta, y eso es justo lo que le permite avisarte de que hay una
+esperándote desde hace tres horas.
+
+Para quitar solo la ventana automática y dejar el panel corriendo, borra
+`~/.config/autostart/warroom.desktop` (o el `.vbs` de la carpeta de Inicio).
+
+En Windows hay cuatro trampas que ya están resueltas y merecen leerse antes de tocar la
+tarea programada: [`docs/WINDOWS.md`](docs/WINDOWS.md).
 
 **Ojo con el nombre: `install.sh` no instala dependencias**, porque no hay
 ninguna que instalar. Lo único que hace es registrar el servicio. Para usar el
@@ -230,19 +263,24 @@ La protección real está en el diseño: el servidor solo abre ficheros en lectu
 La configuración vive en `~/.config/warroom/env`, **fuera del repositorio** y en
 permisos 600. `install.sh` lo crea vacío la primera vez. Todo es opcional:
 
-```ini
-WARROOM_ALERTAS=1
-WARROOM_ALERT_URL=https://…/mi-endpoint
-WARROOM_ALERT_KEY=…
-```
+| Variable | Qué enciende |
+|---|---|
+| `WARROOM_PORT` | El puerto. Por defecto 7777 |
+| `WARROOM_ALERTAS` + `WARROOM_ALERT_URL` + `WARROOM_ALERT_KEY` | Los avisos, apagados si falta cualquiera de las tres |
+| `WARROOM_GRAFO_JSON` | El panel del grafo del código, desde el JSON que exporte tu indexador |
+| `WARROOM_PROD_ESTADO` | El panel de producción, desde un snapshot de tus bases de datos |
 
-Con eso, el panel manda un aviso a ese endpoint cuando una sesión lleva 3 h
-esperándote, cuando un repo lleva 24 h con cambios sin guardar o cuando un agente
-lleva 20 min sin dar señales. Sin URL o sin clave no se manda nada. El cuerpo es
-`{ source, notify, severity, event_type, title, message, metadata }` y la clave
-viaja en la cabecera `x-admin-key`.
+**Avisos.** El panel te avisa cuando una sesión lleva 3 h esperándote, un repo lleva 24 h
+con cambios sin guardar o un agente lleva 20 min sin dar señales. Manda un `POST` al
+endpoint que tú le digas, con tu clave, y también los **cierra** cuando la condición
+desaparece. El contrato completo y un receptor de ejemplo que funciona, en
+[`docs/ALERTAS.md`](docs/ALERTAS.md).
 
-El puerto se cambia con `WARROOM_PORT` (por defecto 7777).
+**Grafo y producción.** Son espejos de solo lectura de herramientas que ya tengas
+montadas. El panel no las trae, define el formato: si tu indexador exporta un JSON con esa
+forma, la vista se dibuja sola. El esquema está en [`docs/GRAFO.md`](docs/GRAFO.md), junto
+con cómo pedirle a Claude que te escriba el indexador. Sin la variable, la sección no se
+dibuja y el panel funciona igual.
 
 Lo demás son constantes arriba de `server.mjs`:
 
