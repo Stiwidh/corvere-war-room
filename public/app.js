@@ -551,10 +551,43 @@ function pintarProduccion(d) {
   // La nota cuenta lo que se está ENSEÑANDO, no el total del ecosistema: si dice 104 con
   // 41 en pantalla, el panel se contradice a sí mismo y deja de ser fiable.
   const abiertasVisibles = listaAlertas.reduce((n, a) => n + (a.abiertas || 0), 0);
-  $('prodnote').textContent = proyFoco
+
+  /* IMPACT-OK: se anaden dos constantes y una funcion locales a `pintarProduccion`, y se
+   * concatena su salida al texto de `prodnote`. Consumidores mapeados: `pintarProduccion`
+   * la llama solo `pintarGrafo`, y `prodnote` es un id de este panel (grep: aparece aqui y
+   * en `index.html`). Los campos nuevos (`foto_horas`, `alertas_horas`) los sirve
+   * el exportador del grafo en la misma pasada; si faltan (JSON de una version anterior)
+   * la linea sale como estaba. Sin produccion implicada: panel local sobre un JSON.
+   *
+   * POR QUE ESTA LINEA EXISTE: el panel enseñaba el tamaño, el plan y el porcentaje de
+   * ocupacion de cada base con la misma cara tanto si el dato era de hace un minuto como
+   * de hace ocho dias, y llego a pasar. Hay un centinela que rehace la foto cuando
+   * envejece, pero media la edad por el mtime del fichero y OTRO proceso lo reescribia
+   * cada 10 minutos para actualizar solo las alertas: lo veia recien tocado y no volvia a
+   * recolectar nunca. Un dato viejo con aspecto de dato en vivo es peor que no tener
+   * dato, porque nadie duda de el. Ahora la foto dice su edad al lado del numero.
+   *
+   * Dos edades y no una porque son dos refrescos distintos a proposito: la foto entera
+   * (tamanos, planes, crons) cada 6 h y las alertas cada 10 min. */
+  const edad = (h) => (h == null ? null
+    : h < 1 ? `${Math.round(h * 60)} min`
+    : h < 48 ? `${Math.round(h)} h`
+    : `${Math.round(h / 24)} d`);
+  const fotoEdad = edad(p.foto_horas);
+  const alertasEdad = edad(p.alertas_horas);
+  // Se avisa a partir de 12 h: el refresco automatico entra a las 6, asi que el doble ya
+  // no es "aun no ha tocado", es "no esta tocando".
+  const fotoVieja = (p.foto_horas || 0) > 12;
+  const sello = [
+    fotoEdad ? `foto de hace ${fotoEdad}` : null,
+    alertasEdad ? `alertas de hace ${alertasEdad}` : null,
+  ].filter(Boolean).join(' · ');
+
+  $('prodnote').innerHTML = esc(proyFoco
     ? `${proyFoco} · ${instancias.length === 1 ? 'su instancia' : instancias.length + ' instancias'}`
       + ` · ${abiertasVisibles} alertas abiertas en 48 h`
-    : `${instancias.length} instancias · ${abiertasVisibles} alertas abiertas en 48 h`;
+    : `${instancias.length} instancias · ${abiertasVisibles} alertas abiertas en 48 h`)
+    + (sello ? ` · <span style="color:${fotoVieja ? 'var(--err)' : 'inherit'}">${esc(sello)}</span>` : '');
   $('prod').innerHTML = `
     ${barras}
     <div class="note" style="margin:12px 0 6px;font-size:11px">
