@@ -11,3 +11,15 @@ data/
 # Documentacion interna de gobernanza: actas, decisiones y metricas de negocio. Se queda
 # en disco y no sube. Salio del historial con `git filter-repo` el 2026-08-17.
 _plan_of_record.md
+
+# ESTE FICHERO SOLO PROTEGE FICHEROS, y ahi esta el hueco: el 2026-08-18 entraron datos
+# internos por donde ningun .gitignore mira, en un COMENTARIO de codigo y en el MENSAJE
+# de un commit (tamaño real de una base, su plan de pago, el nombre del producto y el de
+# una persona). Se limpio con `--amend` y force-push el mismo dia, pero el commit viejo
+# sigue accesible por su SHA: lo publicado no se despublica.
+#
+# La regla, para lo que se escriba a mano: este repo es PUBLICO y esta escrito para
+# terceros. El grafo y la produccion son "los TUYOS", no los nuestros. Nada de nombres de
+# clientes, productos internos, personas, cifras reales de infraestructura, planes
+# contratados ni rutas de otros repos. Un ejemplo se inventa; un incidente se cuenta sin
+# decir a quien le paso.
