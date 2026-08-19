@@ -374,7 +374,10 @@ const volver = () => {
   openId = null; Pulpos.enfocar(null); render();
 };
 $('back').addEventListener('click', volver);
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && openId) volver(); });
+document.addEventListener('keydown', (e) => {
+  // Con el explorador delante, Esc lo cierra a el (mas abajo) y no la sesion de detras.
+  if (e.key === 'Escape' && openId && $('explOverlay').hidden) volver();
+});
 
 /* ── Grafo del código ────────────────────────────────────────────────────────
  * Solo se dibuja si el servidor encuentra el JSON que exporta APPs/CORVERE_GRAPH.
@@ -717,24 +720,45 @@ document.getElementById('vtabs').addEventListener('click', async (e) => {
   try { const r = await fetch('/api/grafo'); if (r.ok) pintarVistas(await r.json()); } catch {}
 });
 
-/* El explorador navegable. Se abre aparte y no empotrado: son 2,3 MB con su propio motor
-   de dibujo, y el panel promete un refresco cada pocos segundos que no puede cargar con
-   eso. El servidor lo regenera solo si el índice es más nuevo que el dibujo.
+/* El explorador navegable. Sigue viviendo FUERA del refresco del panel (son ~4 MB con su
+   propio motor de dibujo, y aquí se recarga cada pocos segundos), pero se mira DENTRO de
+   esta misma ventana: se carga en un iframe a pantalla completa y se descarga al cerrar,
+   así que cuando no se usa el panel pesa exactamente lo mismo que antes.
+
+   Abrirlo con `window.open` sacaba otra ventana del navegador teniendo esta delante, y
+   para volver al War Room había que ir a buscarlo entre las ventanas. El servidor lo
+   regenera solo si el índice es más nuevo que el dibujo.
 
    Con una sesión abierta entra directo a SU proyecto (`#proyecto=`): si ya estabas
    mirando uno concreto, no tiene sentido soltarte en las tarjetas de todo el ecosistema
    para que lo busques otra vez. */
-$('b-explorador').addEventListener('click', () => {
+function abrirExplorador() {
   const b = $('b-explorador');
-  const antes = b.textContent;
+  const antes = b.dataset.label || (b.dataset.label = b.textContent);
   b.textContent = '🕸 generando…';           // puede tardar unos segundos la primera vez
   b.disabled = true;
   const proy = openId ? proyectoEnFoco() : null;
-  const url = '/api/explorador' + (proy ? `#proyecto=${encodeURIComponent(proy)}` : '');
-  const w = window.open(url, '_blank', 'noopener');
-  if (!w) b.textContent = '🕸 permite las ventanas emergentes';
-  setTimeout(() => { b.textContent = antes; b.disabled = false; }, 2500);
-});
+  $('explnote').textContent = proy ? `enfocado en ${proy}` : 'todo el ecosistema';
+  const f = $('explFrame');
+  f.addEventListener('load', () => { b.textContent = antes; b.disabled = false; }, { once: true });
+  f.src = '/api/explorador' + (proy ? `#proyecto=${encodeURIComponent(proy)}` : '');
+  $('explOverlay').hidden = false;
+  document.body.style.overflow = 'hidden';   // el panel de detrás no debe hacer scroll
+  $('expl-cerrar').focus();                  // así el primer Esc ya llega aquí y no al iframe
+}
+
+function cerrarExplorador() {
+  if ($('explOverlay').hidden) return;
+  $('explOverlay').hidden = true;
+  $('explFrame').src = 'about:blank';        // suelta los ~4 MB del dibujo
+  $('explnote').textContent = '';
+  document.body.style.overflow = '';
+  $('b-explorador').focus();
+}
+
+$('b-explorador').addEventListener('click', abrirExplorador);
+$('expl-cerrar').addEventListener('click', cerrarExplorador);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') cerrarExplorador(); });
 
 pintarGrafo();
 setInterval(pintarGrafo, 20000);

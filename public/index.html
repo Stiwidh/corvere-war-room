@@ -234,6 +234,18 @@
   .msg .bd{font-size:12px; color:var(--txt-2)}
   .empty{padding:16px 14px; font-family:var(--mono); font-size:11px; color:var(--txt-3); line-height:1.6}
   .empty b{color:var(--warn)}
+  /* Explorador del grafo empotrado. Ocupa la ventana entera POR ENCIMA del panel en vez
+     de abrir otra ventana del navegador: el War Room ya esta delante, y salir de el para
+     mirar el grafo obligaba a volver a buscarlo entre las ventanas abiertas. */
+  .expl{position:fixed; inset:0; z-index:60; background:var(--void); display:flex; flex-direction:column}
+  .expl-bar{display:flex; align-items:center; gap:12px; padding:8px 14px;
+    background:linear-gradient(180deg,var(--surf),var(--void-2)); border-bottom:1px solid var(--line)}
+  .expl-bar .tit{font-family:var(--mono); font-size:11px; font-weight:700; letter-spacing:.09em;
+    text-transform:uppercase; color:var(--txt-2)}
+  .expl-bar .note{margin-left:0}
+  .expl-bar button{margin-left:auto}
+  .expl iframe{flex:1; width:100%; border:0; background:var(--void)}
+
   [hidden]{display:none !important}
   @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms !important; transition-duration:.01ms !important}}
 </style>
@@ -344,6 +356,20 @@
       </section>
     </div>
   </div>
+</div>
+<!--
+  El explorador del grafo, dentro de esta misma ventana. Antes se abria con window.open y
+  aparecia otra ventana del navegador teniendo esta delante. El iframe nace vacio y se
+  vacia al cerrar: los ~4 MB del dibujo solo viven mientras se esta mirando, asi que el
+  panel pesa lo mismo que antes cuando no se usa.
+-->
+<div class="expl" id="explOverlay" hidden>
+  <div class="expl-bar">
+    <span class="tit">🕸 explorador del grafo</span>
+    <span class="note" id="explnote"></span>
+    <button type="button" id="expl-cerrar">cerrar (Esc)</button>
+  </div>
+  <iframe id="explFrame" title="Explorador del grafo" src="about:blank"></iframe>
 </div>
 <script src="pulpos.js"></script>
 <script src="app.js"></script>
