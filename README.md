@@ -232,6 +232,27 @@ el líder. Es la métrica que distingue un equipo de un fan-out. Cuando aparece
 uno, se dibuja una arista magenta entre los dos nodos y se queda ahí como huella
 de que esos dos colaboraron.
 
+### Entre sesiones
+
+Dos sesiones de Claude Code pueden **hablarse entre ellas**, y eso no es lo mismo
+que un agente hablando con su líder: son dos ventanas distintas, cada una con su
+contexto y su repositorio, coordinándose para no pisarse. Se dibuja un **cable
+cian** entre las dos cabezas, con el número de mensajes que han cruzado, y un
+pulso cada vez que llega uno nuevo.
+
+Si la otra punta no está en el mapa (se cerró, o su repo se salió de la ventana),
+sale igual como un nodo aparte colgado de su interlocutora: media conversación es
+peor que ninguna. El panel **Entre sesiones** lista las parejas, y el detalle de
+cada sesión lleva su propia conversación, con quién dijo qué y **qué mensajes no
+llegaron a entregarse** porque la otra ya se había cerrado.
+
+En la ficha de cada sesión aparece su **nombre** (`checkout-api-2c`), que no es
+decorativo: es su **dirección**, lo que hay que escribir para mandarle un mensaje
+desde otra ventana.
+
+Estos mensajes no cuentan como `laterales` ni como "al líder". Son de otra
+naturaleza y tienen su propio contador.
+
 ---
 
 ## Cómo funciona por dentro
@@ -247,6 +268,32 @@ emparejan con el spawn del líder más cercano en el tiempo, que es de donde sal
 rol real. Si no hay spawn a mano, se deduce del prompt inicial.
 
 El estado se manda al navegador por SSE una vez por segundo.
+
+### Cómo sabe qué sesión habla con cuál
+
+Una sesión se direcciona por su socket, `$XDG_RUNTIME_DIR/cc-socks/<pid>.sock`, y
+el nombre del fichero **es el pid** del proceso. Eso da la otra punta de la
+conversación, pero un pid no se puede enseñar: hay que traducirlo a sesión,
+nombre y proyecto. Cuatro fuentes, y ninguna imprescindible:
+
+1. **`claude agents --json`**: pid a sessionId, nombre y `cwd`. La buena.
+2. **`/proc`**: solo el `cwd`, pero ya dice a qué proyecto le estás hablando.
+3. **El mensaje recibido**, que trae el nombre de quien escribe. Es la única que
+   sigue sirviendo cuando la sesión de enfrente ya se cerró.
+4. **Los dos lados del mismo mensaje.** El emisor recibe un identificador en el
+   acuse de su envío y el receptor guarda ese mismo identificador en lo que le
+   llega. Cruzándolos se despeja quién es quién sin preguntarle a nadie, y
+   funciona con sesiones cerradas hace días.
+
+Ese identificador es también lo que evita contar cada mensaje dos veces: queda
+escrito en los dos transcripts, el de quien lo manda y el de quien lo recibe.
+Emparejar por hora no vale, porque entre el envío y la lectura pueden pasar
+minutos si la otra sesión estaba ocupada.
+
+**Si el CLI no está en el `PATH`, el panel funciona igual pero a media luz**: sin
+nombres de sesión y sin la traducción de pid a sesión. Como esto corre de
+servicio y systemd no hereda tu shell, el binario se busca también en
+`~/.local/bin` y `~/.claude/local`, que es donde lo deja el instalador oficial.
 
 ### Seguridad
 

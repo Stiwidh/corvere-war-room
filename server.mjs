@@ -239,6 +239,49 @@ let fleetError = null;
 /** Lo que el panel NO puede saber ahora mismo, dicho en la barra. */
 let avisoFuentes = null;
 
+/*
+ * DIRECTORIO DE SESIONES POR PID: lo que permite ver hablar a dos sesiones.
+ *
+ * IMPACT-OK: bloque nuevo y aditivo. Mapeo transitivo hecho a mano sobre el repo entero
+ * (17 ficheros, sin bundler): `server.mjs` no lo importa nadie, es el entrypoint del
+ * servicio (consumidores: el script de `package.json`, `warroom.service.in`,
+ * `windows/arrancar.cmd` y `capturas.mjs`, que lo arranca como subproceso en modo demo).
+ * Su contrato hacia fuera es HTTP: `/api/stream`, `/api/replay`, `/api/dia`, `/api/grafo`
+ * y `/api/piezas`, consumidos solo por `public/app.js` vía <script src> desde
+ * `public/index.html`. Los campos que añado al snapshot son nuevos, ninguno se renombra
+ * ni se quita, así que un `app.js` viejo sigue funcionando igual. Sin producción
+ * implicada: panel local de solo lectura que no escribe nada en ~/.claude.
+ *
+ * Una sesión se direcciona por su socket, `uds:$XDG_RUNTIME_DIR/cc-socks/<pid>.sock`, y
+ * el nombre del fichero ES el pid del proceso. Eso da la otra punta de la conversación,
+ * pero un pid no se puede enseñar: hay que traducirlo a sesión, nombre y proyecto. Tres
+ * fuentes, y ninguna imprescindible:
+ *
+ *   1. `claude agents --json`: pid -> sessionId + nombre + cwd. La buena, cuando está.
+ *   2. /proc: pid -> cwd. Sin sessionId, pero dice al menos a qué proyecto le hablas.
+ *   3. El propio mensaje recibido, que trae `from-name="proyectos-d9"`. Es la única
+ *      que sigue funcionando cuando la sesión de enfrente ya se cerró, y por eso el
+ *      directorio NO se limpia: un mensaje de hace tres horas se tiene que poder
+ *      atribuir aunque su emisor lleve dos horas muerto.
+ */
+const porPid = new Map();      // pid -> { sessionId, nombre, cwd, vivo, visto }
+const porNombre = new Map();   // 'proyectos-d9' -> pid
+
+function apuntarPid(pid, datos) {
+  if (!pid) return null;
+  const prev = porPid.get(pid) || { pid };
+  const v = Object.assign(prev, datos, { visto: now() });
+  porPid.set(pid, v);
+  if (v.nombre) porNombre.set(v.nombre, pid);
+  return v;
+}
+
+/** El pid que hay dentro de `uds:/run/user/1000/cc-socks/21890.sock`. */
+const pidDeSocket = (addr) => {
+  const m = /(?:^|\/)(\d+)\.sock$/.exec(String(addr || ''));
+  return m ? Number(m[1]) : 0;
+};
+
 const now = () => Date.now() / 1000;
 const AGENT_FILE = /^agent-a([A-Za-z][\w-]*?)-[0-9a-f]{12,}$/;
 
@@ -494,10 +537,35 @@ const ejecutar = (cmd, args, ms = 5000) => new Promise((listo) => {
    aparece luego. */
 let cacheCli = { t: 0, datos: null, falloHasta: 0 };
 
+/*
+ * Dónde buscar el binario, y por qué no basta con el PATH.
+ *
+ * Este panel se arranca como servicio de usuario, y systemd no hereda tu shell: el
+ * servicio corre con `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:...`, donde
+ * `claude` NO está, porque el instalador oficial lo pone en `~/.local/bin`. Resultado
+ * medido el 2026-08-22 contra el proceso vivo: esta función devolvía null en cada
+ * barrido, el panel llevaba semanas corriendo con una sola de sus dos fuentes, y por eso
+ * ninguna sesión tenía nombre. No daba error: simplemente faltaba la mitad del dato.
+ *
+ * Con el CLI caído el panel funciona, pero pierde tres cosas: el nombre de cada sesión
+ * (que es su dirección para escribirle), la certeza por sessionId, y la traducción
+ * pid -> sesión que necesita todo lo de "entre sesiones". Así que se busca también en las
+ * rutas donde el instalador lo deja de verdad.
+ */
+const BINARIOS_CLI = process.platform === 'win32'
+  ? ['claude.cmd', 'claude']
+  : ['claude',
+     path.join(HOME, '.local', 'bin', 'claude'),
+     path.join(HOME, '.claude', 'local', 'claude'),
+     '/usr/local/bin/claude'];
+
 async function sesionesDelCli() {
   if (now() - cacheCli.t < 5) return cacheCli.datos;
   if (now() < cacheCli.falloHasta) return null;
-  const binarios = process.platform === 'win32' ? ['claude.cmd', 'claude'] : ['claude'];
+  // el que funcionó la última vez va primero: lo normal es acertar a la primera
+  const binarios = cacheCli.bin
+    ? [cacheCli.bin, ...BINARIOS_CLI.filter((b) => b !== cacheCli.bin)]
+    : BINARIOS_CLI;
   for (const bin of binarios) {
     const salida = await ejecutar(bin, ['agents', '--json'], 8000);
     if (salida == null) continue;
@@ -505,12 +573,17 @@ async function sesionesDelCli() {
       const lista = JSON.parse(salida);
       if (!Array.isArray(lista)) continue;
       const porId = new Map();
-      for (const a of lista) if (a?.sessionId) porId.set(a.sessionId, a);
-      cacheCli = { t: now(), datos: porId, falloHasta: 0 };
+      for (const a of lista) {
+        if (!a?.sessionId) continue;
+        porId.set(a.sessionId, a);
+        // aquí es donde el directorio aprende quién es cada pid
+        apuntarPid(a.pid, { sessionId: a.sessionId, nombre: a.name || '', cwd: a.cwd || '' });
+      }
+      cacheCli = { t: now(), datos: porId, falloHasta: 0, bin };
       return porId;
     } catch { /* salida que no era JSON */ }
   }
-  cacheCli = { t: now(), datos: null, falloHasta: now() + 120 };
+  cacheCli = { t: now(), datos: null, falloHasta: now() + 120, bin: cacheCli.bin };
   return null;
 }
 
@@ -545,9 +618,33 @@ async function liveCwds() {
       if (comm !== 'claude') return;
       const cwd = await fsp.readlink(`/proc/${pid}/cwd`);
       out.set(cwd, (out.get(cwd) || 0) + 1);
+      // segunda fuente del directorio: sin sessionId, pero dice a qué proyecto
+      // le estás hablando cuando el CLI no está disponible
+      apuntarPid(Number(pid), { cwd, vivo: true });
     } catch { /* murió mientras mirábamos */ }
   }));
   return out;
+}
+
+/**
+ * Qué sesiones siguen escuchando. El socket vive mientras vive el proceso, así que su
+ * ausencia es lo que convierte un "le escribí" en un "le escribí y ya no está".
+ */
+const DIR_SOCKS = path.join(
+  process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? ''}`, 'cc-socks');
+
+async function socketsVivos() {
+  let ficheros;
+  try { ficheros = await fsp.readdir(DIR_SOCKS); }
+  catch { return null; }   // Windows, o aquí no hay sockets: no se afirma nada
+  const vivos = new Set();
+  for (const f of ficheros) {
+    const pid = pidDeSocket(f);
+    if (pid) { vivos.add(pid); apuntarPid(pid, { vivo: true }); }
+  }
+  // solo con el listado en la mano se puede AFIRMAR que uno ya no está
+  for (const [pid, v] of porPid) if (v.vivo && !vivos.has(pid)) v.vivo = false;
+  return vivos;
 }
 
 /* ─────────────────────────── ingesta ─────────────────────────── */
@@ -557,6 +654,9 @@ function blankSession(id, cwd, branch) {
     id, cwd, branch,
     project: path.basename(cwd || '') || 'sin proyecto',
     agents: new Map(), messages: [], tasks: [], spawns: [],
+    // conversación con OTRAS sesiones de Claude Code, que no son sus agentes:
+    // otro proceso, otro contexto, otra ventana de terminal
+    cruces: [], cross: 0,
     // ficheros ESCRITOS por esta sesión: es lo que permite ver si dos sesiones
     // del mismo repo se están pisando
     escritos: new Map(),
@@ -599,6 +699,22 @@ function claimSpawn(s, a) {
   }
 }
 
+/**
+ * Un mensaje con OTRA sesión. No es un agente de esta: es otro proceso con su propio
+ * contexto, y por eso no cuenta ni como `up` ni como `lat`, que miden lo que pasa
+ * dentro de un equipo. Antes caía en `up` (el `to` no era 'team-lead') y el panel
+ * enseñaba como "mensajes al líder" cuatro avisos que iban a otra ventana.
+ */
+function cruce(s, c) {
+  s.cross++;
+  s.cruces.push(c);
+  if (s.cruces.length > MSG_KEEP) s.cruces.shift();
+  return c;
+}
+
+/** El emisor sabe si su mensaje llegó, pero lo sabe una línea después, en el resultado. */
+const cruceEsperando = new Map();   // tool_use_id -> cruce pendiente de acuse
+
 /** Procesa una línea de transcript. `who` es null para el líder. */
 function ingest(s, who, o) {
   const t = tsOf(o.timestamp);
@@ -614,7 +730,61 @@ function ingest(s, who, o) {
     else s.lead.toks += outTok;
   }
   const content = msg?.content;
+
+  /* LO QUE LLEGA DE OTRA SESIÓN.
+     El receptor no lo ve como una herramienta sino como un mensaje de usuario, y lo
+     acompaña de un `origin` con lo que no está en ningún otro sitio: el pid verificado
+     del proceso que escribe, su nombre, y el identificador del mensaje. Ese identificador
+     es el que aparece también en el acuse del emisor, y es lo que permite saber que el
+     "enviado" de una sesión y el "recibido" de la otra son el mismo mensaje y no dos.
+
+     `kind: 'peer'` NO basta como discriminador: los subagentes usan el mismo canal (ahí
+     `from` es "Explore" y trae `senderTaskId`). Lo que distingue a otra sesión es que su
+     dirección sea un socket. */
+  if (o.type === 'user' && !o.isSidechain) {
+    const org = o.origin && typeof o.origin === 'object' ? o.origin : null;
+    const addr = String(org?.from || '');
+    const txt = typeof content === 'string' ? content
+      : Array.isArray(content) ? content.map((b) => (b && typeof b.text === 'string' ? b.text : '')).join('\n')
+      : '';
+    // el `origin` es lo bueno; el parseo del texto cubre las versiones que no lo traían
+    const viejo = !addr.startsWith('uds:') && txt.includes('<cross-session-message')
+      && /<cross-session-message\s+from="([^"]*)"(?:\s+from-name="([^"]*)")?/.exec(txt);
+    if (addr.startsWith('uds:') || viejo) {
+      const pid = org?.verifiedPeerPid || pidDeSocket(addr || viejo[1]);
+      const nombre = String(org?.name || (viejo ? viejo[2] : '') || '');
+      apuntarPid(pid, nombre ? { nombre } : {});
+      const cuerpo = String(org?.body
+        || txt.slice(txt.indexOf('>', txt.indexOf('<cross-session-message')) + 1));
+      const linea = cuerpo.split('\n').map((l) => l.replace(/^[#*\s>-]+/, '').trim())
+        .find((l) => l.length > 12) || '';
+      cruce(s, { t, dir: 'in', pid, addr: addr || viejo[1], nombre, ok: true,
+                 msgId: String(org?.msg_id || ''),
+                 summary: linea.replace(/\*\*/g, '').slice(0, 110) });
+      return;   // no hay herramientas dentro de un mensaje entrante
+    }
+  }
+
   if (!Array.isArray(content)) return;
+
+  /* El acuse del envío llega en la línea siguiente, como resultado de la herramienta:
+     ahí se ve si el socket seguía escuchando o si la otra sesión se había reiniciado y
+     el mensaje se perdió sin más. Un envío fallido es justo lo que hay que ver. */
+  for (const b of content) {
+    if (!b || b.type !== 'tool_result') continue;
+    const pend = cruceEsperando.get(b.tool_use_id);
+    if (!pend) continue;
+    cruceEsperando.delete(b.tool_use_id);
+    const txt = typeof b.content === 'string' ? b.content
+      : Array.isArray(b.content) ? b.content.map((x) => x?.text || '').join(' ') : '';
+    if (b.is_error || /"success"\s*:\s*false|Failed to send/.test(txt)) {
+      pend.ok = false;
+      pend.fallo = /stale|ENOENT|restarted/.test(txt) ? 'esa sesión ya no escucha' : 'no se pudo entregar';
+    }
+    // el identificador que la otra sesión guardará al recibirlo: la costura entre los dos
+    const id = /"msg_id"\s*:\s*"([^"]+)"/.exec(txt);
+    if (id) pend.msgId = id[1];
+  }
 
   for (const b of content) {
     // Lo que el agente ESCRIBE mientras trabaja. El `thinking` se guarda vacío
@@ -657,6 +827,30 @@ function ingest(s, who, o) {
     if (b.name === 'SendMessage') {
       const from = who || 'team-lead';
       const to = String(b.input?.to || '');
+
+      /* ¿Va a otra SESIÓN o a un compañero de esta? Lo dice la dirección: un socket
+         es un proceso aparte. No cuenta como `up` ni como `lat` porque esas dos miden
+         el reparto DENTRO de un equipo, y aquí no hay equipo: hay dos ventanas. */
+      const pid = to.startsWith('uds:') ? pidDeSocket(to) : 0;
+      if (pid || to.startsWith('uds:')) {
+        const c = cruce(s, { t, dir: 'out', pid, addr: to, quien: from, ok: true,
+                             nombre: porPid.get(pid)?.nombre || '',
+                             summary: String(b.input?.summary || '').slice(0, 110) });
+        if (b.id) cruceEsperando.set(b.id, c);
+        if (who) {
+          const a = agentOf(s, who);
+          a.last = t; a.tool = 'envía';
+          a.recent.unshift({ t, tool: '✉', d: `otra sesión · ${c.summary}`.slice(0, 70), msg: true, cross: true });
+          a.recent.length = Math.min(a.recent.length, ACT_KEEP);
+        } else {
+          s.lead.recent.unshift({ t, tool: '✉', d: `otra sesión · ${c.summary}`.slice(0, 70), msg: true, cross: true });
+          s.lead.recent.length = Math.min(s.lead.recent.length, ACT_KEEP);
+          s.lead.lastAt = t;
+        }
+        s.acts++;
+        continue;
+      }
+
       const lateral = from !== 'team-lead' && to !== 'team-lead' && to !== 'main';
       lateral ? s.lat++ : s.up++;
       s.messages.push({ t, from, to, lateral,
@@ -744,15 +938,29 @@ async function scan() {
       if (st.mtimeMs / 1000 < cutoff) continue;
       const id = e.name.slice(0, -6);
       const prev = best.get(id);
-      // el mismo transcript aparece replicado en varios directorios: nos
-      // quedamos con la copia mayor, que es la real
-      if (!prev || st.size > prev.size) {
+      /* El mismo transcript aparece replicado en varios directorios: nos quedamos con la
+         copia mayor, que es la real.
+
+         El desempate por ruta NO es cosmético. Estos directorios se recorren en paralelo,
+         así que con tamaños IGUALES (que es lo normal: son copias byte a byte) ganaba el
+         primero en llegar, y eso cambia de un barrido a otro. Como el cursor de lectura va
+         por RUTA, al cambiar de copia se volvía a leer desde la cola: 4 MB releídos y todo
+         lo que hay en ellos contado dos veces. Medido el 2026-08-22 sobre una sesión
+         replicada en 11 directorios con 2,9 MB (por debajo del tail, o sea el fichero
+         entero): el mismo mensaje entre sesiones aparecía dos veces en el panel, y las
+         acciones y los tokens venían inflados sin que se notara. Con el desempate, la ruta
+         elegida es siempre la misma y el cursor sirve para lo que se creó. */
+      if (!prev || st.size > prev.size || (st.size === prev.size && file < prev.file)) {
         best.set(id, { file, dir: path.join(dir, id), size: st.size, mtime: st.mtimeMs / 1000 });
       }
     }
   }));
 
   const live = await liveCwds();
+  // quién sigue escuchando en su socket: convierte "le escribí" en "le escribí y ya no está"
+  await socketsVivos().catch(() => null);
+  // acuses que nunca llegaron (la sesión se cerró a media herramienta): no se acumulan
+  if (cruceEsperando.size > 200) cruceEsperando.clear();
   // ninguna de estas dos puede tumbar el barrido: si fallan, se sigue sin ellas
   const cli = await sesionesDelCli().catch(() => null);   // Map sessionId -> info
   const appViva = await appEscritorio().catch(() => false);
@@ -870,6 +1078,9 @@ async function scan() {
 
   // sesiones que se salieron de la ventana: fuera de memoria
   for (const id of [...sessions.keys()]) if (!seen.has(id)) sessions.delete(id);
+
+  // con todos los transcritos ya leídos, cerrar las identidades que el CLI no puede dar
+  emparejarPorMsgId();
 }
 
 /* ─────────────────── avisos a un pipeline externo (opcional) ─────────────────── */
@@ -1346,6 +1557,110 @@ async function medirReglas() {
 
 /* ─────────────────────────── snapshot ─────────────────────────── */
 
+/**
+ * CUARTA FUENTE: los dos lados del mismo mensaje.
+ *
+ * El CLI solo lista las sesiones VIVAS, así que una conversación de ayer se quedaba con
+ * un pid suelto que no se podía traducir, y la misma charla salía partida en dos filas
+ * sin relación aparente. Pero un mensaje deja huella en los dos transcripts y las dos
+ * huellas comparten identificador: el emisor lo recibe en el acuse de su envío, y el
+ * receptor lo guarda en el `origin` de lo que le llega. Cruzándolas se despeja quién es
+ * quién sin preguntarle a nadie, y funciona igual con sesiones cerradas hace días.
+ *
+ * Emparejar por identificador y no por hora es lo que lo hace fiable: entre el envío y
+ * la lectura pueden pasar minutos si la otra sesión estaba ocupada, así que cualquier
+ * ventana de tiempo o se pasa de corta y no empareja, o se pasa de larga y confunde dos
+ * mensajes distintos. Lo que aprende por aquí NUNCA pisa lo que dijo el CLI, que es dato
+ * directo y no inferencia.
+ */
+function emparejarPorMsgId() {
+  const salidas = new Map();   // msgId -> { sesion, pid }
+  const llegadas = new Map();
+  for (const s of sessions.values()) {
+    for (const c of s.cruces) {
+      if (!c.msgId || !c.pid) continue;
+      (c.dir === 'out' ? salidas : llegadas).set(c.msgId, { sesion: s.id, pid: c.pid });
+    }
+  }
+  for (const [msgId, o] of salidas) {
+    const i = llegadas.get(msgId);
+    if (!i || i.sesion === o.sesion) continue;
+    // o.pid es el proceso de quien RECIBIÓ, i.pid el de quien ENVIÓ
+    if (!porPid.get(o.pid)?.sessionId) apuntarPid(o.pid, { sessionId: i.sesion, inferido: true });
+    if (!porPid.get(i.pid)?.sessionId) apuntarPid(i.pid, { sessionId: o.sesion, inferido: true });
+  }
+}
+
+/**
+ * De un pid a alguien con nombre. Se resuelve AQUÍ y no al leer el transcript, porque el
+ * directorio se va rellenando: un mensaje leído hace diez minutos, cuando aún no sabíamos
+ * quién era ese pid, queda resuelto en cuanto la otra sesión aparece por cualquiera de
+ * las cuatro fuentes.
+ */
+function quienEs(pid, nombre) {
+  const v = porPid.get(pid) || (nombre ? porPid.get(porNombre.get(nombre)) : null) || null;
+  const id = v?.sessionId || null;
+  const ses = id ? sessions.get(id) : null;
+  return {
+    id,
+    nombre: v?.nombre || nombre || ses?.nombre || '',
+    proyecto: ses?.project || (v?.cwd ? path.basename(v.cwd) : ''),
+    vivo: !!v?.vivo,
+  };
+}
+
+/**
+ * Las conversaciones entre sesiones, agregadas por pareja.
+ *
+ * Un mensaje deja huella en los DOS transcripts, el de quien lo manda y el de quien lo
+ * recibe, así que sumar los dos lados contaría cada aviso dos veces. Se descarta el
+ * recibido solo cuando aparece su envío, y se reconocen por el mismo identificador que
+ * usa `emparejarPorMsgId`. Descartarlo porque el emisor "esté por ahí" perdía mensajes de
+ * verdad: de cada transcript se lee la cola y no entero, así que de una sesión larga
+ * tenemos lo que recibió sin tener lo que mandó.
+ */
+function enlacesEntreSesiones() {
+  const todos = [];
+  const enviados = new Set();
+  for (const s of sessions.values()) {
+    for (const c of s.cruces) {
+      const q = quienEs(c.pid, c.nombre);
+      const otro = q.id || (c.pid ? `pid:${c.pid}` : `nom:${q.nombre || '?'}`);
+      todos.push({ s, c, q, otro, par: [s.id, otro].sort().join('~') });
+      if (c.dir === 'out' && c.msgId) enviados.add(c.msgId);
+    }
+  }
+  const cuenta = todos.filter((x) => x.c.dir === 'out' || !enviados.has(x.c.msgId));
+
+  const pares = new Map();
+  for (const { s, c, q, otro, par } of cuenta) {
+    let e = pares.get(par);
+    if (!e) {
+      e = { a: s.id, aNombre: s.nombre || '', aProy: s.project,
+            b: q.id, bRef: otro, bNombre: q.nombre, bProy: q.proyecto, bVivo: q.vivo,
+            enviados: 0, recibidos: 0, fallidos: 0, ultimo: 0, ultimoTexto: '' };
+      pares.set(par, e);
+    }
+    // la otra punta se conoce mejor por unos cruces que por otros: si uno la resolvió, vale
+    if (!e.b && q.id) { e.b = q.id; e.bProy = q.proyecto || e.bProy; }
+    if (!e.bNombre && q.nombre) e.bNombre = q.nombre;
+    if (q.vivo) e.bVivo = true;
+
+    /* Enviados y recibidos van SIEMPRE desde el punto de vista de `a`. Los dos lados
+       aportan cruces al mismo par, y el mismo mensaje es "salida" para uno y "llegada"
+       para el otro: sin fijar la perspectiva, una conversación de ida y vuelta se
+       enseñaría como si solo uno hubiera hablado. */
+    const desdeA = s.id === e.a;
+    const salida = desdeA ? c.dir === 'out' : c.dir === 'in';
+    if (salida) { e.enviados++; if (c.ok === false) e.fallidos++; }
+    else e.recibidos++;
+    if (c.t > e.ultimo) { e.ultimo = c.t; e.ultimoTexto = c.summary || ''; }
+  }
+  return [...pares.values()]
+    .map((e) => Object.assign(e, { n: e.enviados + e.recibidos }))
+    .sort((x, y) => y.ultimo - x.ultimo);
+}
+
 function snapshot() {
   if (demo) return demo.flota(now());
   const list = [...sessions.values()]
@@ -1371,6 +1686,14 @@ function snapshot() {
       lead: { ...s.lead, recent: s.lead.recent.slice(0, ACT_KEEP) },
       tasks: s.tasks,
       messages: s.messages.slice(-MSG_KEEP),
+      // lo hablado con OTRAS sesiones, aparte de `up` y `lat`, que son de puertas adentro
+      cross: s.cross,
+      cruces: s.cruces.slice(-MSG_KEEP).map((c) => {
+        const q = quienEs(c.pid, c.nombre);
+        return { t: c.t, dir: c.dir, quien: c.quien || 'team-lead', pid: c.pid,
+                 ok: c.ok !== false, fallo: c.fallo || '', summary: c.summary || '',
+                 otroId: q.id, otroNombre: q.nombre, otroProy: q.proyecto, otroVivo: q.vivo };
+      }),
       agents: [...s.agents.values()].map((a) => ({
         name: a.name, title: a.title || '', type: a.type || '',
         born: a.born, last: a.last, acts: a.acts, toks: a.toks,
@@ -1380,7 +1703,7 @@ function snapshot() {
     }));
   return { now: now(), error: fleetError,
            aviso: avisoFuentes?.largo || null, avisoCorto: avisoFuentes?.corto || null,
-           sessions: list };
+           sessions: list, enlaces: enlacesEntreSesiones() };
 }
 
 /* ─────────────────────────── http ─────────────────────────── */

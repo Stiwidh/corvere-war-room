@@ -82,6 +82,19 @@ function render() {
   const waiting = s.filter((x) => x.status === 'waiting').length;
   const agents = s.reduce((n, x) => n + x.agents.filter((a) => !a.retired).length, 0);
   const lat = s.reduce((n, x) => n + x.lat, 0);
+  /* Mensajes con OTRAS sesiones. Se cuentan de `enlaces`, que ya viene deduplicado del
+     servidor: sumar el `cross` de cada sesión contaría dos veces los mensajes en los que
+     las dos puntas están abiertas, que es justo el caso interesante.
+
+     IMPACT-OK: cambios aditivos sobre el fichero. Mapeo transitivo a mano del repo (17
+     ficheros, sin bundler): `app.js` se carga con <script src> desde `public/index.html`
+     y no lo importa nadie (el `capturas.mjs` que reporta el gate solo abre la URL en un
+     navegador para las capturas del README, no el fichero). Hacia fuera consume la API de
+     `Pulpos` (misma superficie, con un tercer argumento opcional en `sync`) y los
+     endpoints `/api/*` de `server.mjs`, cuyo snapshot solo ha ganado campos. Los ids
+     nuevos que toco (`enlacesPanel`, `enlaces`, `enlacesnote`, `crucesPanel`, `cruces`,
+     `crucesnote`) los acabo de crear en el HTML. Sin producción implicada: panel local. */
+  const entreSesiones = (state.enlaces || []).reduce((n, e) => n + e.n, 0);
   const olvidada = s.filter((x) => x.status === 'waiting').sort((a, b) => b.idle - a.idle)[0];
 
   $('kpis').innerHTML = `
@@ -91,6 +104,7 @@ function render() {
     <div class="kpi warn"><span class="lab">Te esperan</span><span class="val">${waiting}</span></div>
     <div class="kpi"><span class="lab">Agentes vivos</span><span class="val">${agents}</span></div>
     <div class="kpi ${lat ? 'hot' : ''}"><span class="lab">Laterales</span><span class="val tnum">${lat}</span></div>
+    ${entreSesiones ? `<div class="kpi"><span class="lab">Entre sesiones</span><span class="val tnum" style="color:#22d3ee">${entreSesiones}</span></div>` : ''}
     ${olvidada ? `<div class="kpi warn"><span class="lab">Más olvidada</span><span class="val" style="font-size:13px">${olvidada.project.slice(0, 16)} · ${ago(olvidada.idle)}</span></div>` : ''}`;
 
   pintarFavicon(waiting ? ICONO.espera
@@ -118,7 +132,8 @@ function renderFleet(list) {
     setTimeout(() => Pulpos.medir(), 330);
   }
   // al motor solo van las abiertas, más la que estés mirando en detalle
-  Pulpos.sync(list.filter((s) => s.status !== 'closed' || s.id === openId), state.now);
+  Pulpos.sync(list.filter((s) => s.status !== 'closed' || s.id === openId), state.now, state.enlaces);
+  pintarEnlaces(state.enlaces || []);
   const agentesVivos = list.reduce((n, s) => n + s.agents.filter((a) => !a.retired).length, 0);
   // el mapa es el presente: las cerradas no lo ensucian, viven en su cajón
   const cerradas = list.filter((s) => s.status === 'closed');
@@ -133,6 +148,40 @@ function renderFleet(list) {
   if (!list.length) {
     $('mapanote').textContent = 'ninguna sesión de Claude Code abierta ahora mismo';
   }
+}
+
+/**
+ * Quién habla con quién. Una sesión puede mandarle un mensaje a otra, y eso no es lo
+ * mismo que un agente hablando con su líder: son dos ventanas coordinándose, cada una con
+ * su contexto. Aquí se ve la pareja, cuánto se han dicho y lo último que se dijeron, y
+ * sobre todo la DIRECCIÓN de cada una, que es lo que hay que escribir para contestar.
+ */
+function pintarEnlaces(lista) {
+  $('enlacesPanel').hidden = !lista.length;
+  if (!lista.length) return;
+  const vivas = lista.filter((e) => e.bVivo).length;
+  $('enlacesnote').textContent = `${lista.length} ${lista.length === 1 ? 'conversación' : 'conversaciones'}`
+    + (vivas ? ` · ${vivas} con la otra sesión abierta` : ' · ninguna sigue abierta');
+  $('enlaces').innerHTML = lista.map((e) => {
+    const a = e.aNombre || e.aProy;
+    const b = e.bNombre || e.bProy || 'sesión ' + String(e.bRef).replace('pid:', 'pid ');
+    const flechas = e.enviados && e.recibidos ? '⇄' : e.enviados ? '→' : '←';
+    return `<div class="enlace ${e.bVivo ? '' : 'muerta'}" data-enlace="${e.a}" title="${esc(e.ultimoTexto)}">
+      <span class="quien">${esc(a)}</span>
+      <span class="flecha">${flechas}</span>
+      <span class="quien">${esc(b)}</span>
+      <span class="txt">${esc(e.ultimoTexto)}</span>
+      <span class="cuenta">${e.n} ✉${e.fallidos ? ` · ${e.fallidos} sin entregar` : ''}</span>
+      <span class="own" style="flex:none">hace ${ago(state.now - e.ultimo)}</span>
+    </div>`;
+  }).join('');
+  $('enlaces').querySelectorAll('[data-enlace]').forEach((el) => {
+    el.addEventListener('click', () => {
+      openId = el.dataset.enlace;
+      Pulpos.enfocar(openId);
+      render();
+    });
+  });
 }
 
 /** El cajón de las cerradas: no ensucian el mapa pero siguen a un clic. */
@@ -163,6 +212,8 @@ function renderDetail(s) {
   $('detail').hidden = false; $('back').hidden = false;
   $('mapaPanel').hidden = false;
   $('cerradasPanel').hidden = true;
+  // el panel de conversaciones es de la vista de flota: aquí manda lo de ESTA sesión
+  $('enlacesPanel').hidden = true;
   $('b-cerradas').hidden = true;
   if (!$('mapaPanel').classList.contains('enfocado')) {
     $('mapaPanel').classList.add('enfocado');
@@ -194,11 +245,13 @@ function renderDetail(s) {
   if (Pulpos.replayEstado()) return;   // en replay manda el transcript, no el vivo
   $('mapanote').textContent = `${s.project} · ${vivos.length} agentes vivos · ${muertos.length} retirados`;
   $('b-replay').hidden = false;
-  Pulpos.sync(state.sessions, state.now);
+  Pulpos.sync(state.sessions, state.now, state.enlaces);
 
-  // la ficha que antes vivía en la tarjeta del mapa
+  // la ficha que antes vivía en la tarjeta del mapa. El nombre va delante y con formato
+  // de dirección: es lo que hay que escribir para mandarle un mensaje a esta sesión
   $('fichaSes').innerHTML = `
     <div class="cmeta">
+      ${s.nombre ? `<span class="dir" title="dirección de esta sesión: con este nombre se le escribe desde otra">${esc(s.nombre)}</span>` : ''}
       <span>${s.branch || 'sin rama'}</span><span>${s.id.slice(0, 8)}</span>
       ${s.hasTeam ? '<span style="color:var(--accent-soft)">equipo</span>' : ''}
       <span>arrancó ${ago(state.now - s.startedAt)} atrás</span>
@@ -278,12 +331,31 @@ function renderDetail(s) {
   $('msgnote').textContent = `${s.up + s.lat} mensajes · ${s.lat} laterales`;
   $('feed').innerHTML = [...s.messages].reverse().map((m) => `
     <div class="msg ${m.lateral ? 'lat' : 'up'}">
-      <div class="hd"><span class="tm">${clock(m.t)}</span><span class="fr">${m.from}</span>
-        <span class="ar">→</span><span class="to">${m.to}</span>
+      <div class="hd"><span class="tm">${clock(m.t)}</span><span class="fr">${esc(m.from)}</span>
+        <span class="ar">→</span><span class="to">${esc(m.to)}</span>
         <span class="tag">${m.lateral ? 'lateral' : 'al líder'}</span></div>
-      <div class="bd">${m.summary}</div></div>`).join('')
+      <div class="bd">${esc(m.summary)}</div></div>`).join('')
     || '<div class="empty">Todavía ningún mensaje entre agentes.</div>';
 
+  /* lo hablado con otras sesiones: ni al líder ni lateral, otra ventana */
+  const cruces = s.cruces || [];
+  $('crucesPanel').hidden = !cruces.length;
+  if (cruces.length) {
+    const fuera = cruces.filter((c) => c.dir === 'out').length;
+    const fallos = cruces.filter((c) => !c.ok).length;
+    $('crucesnote').textContent = `${fuera} enviados · ${cruces.length - fuera} recibidos`
+      + (fallos ? ` · ${fallos} sin entregar` : '');
+    $('cruces').innerHTML = [...cruces].reverse().map((c) => {
+      const otro = c.otroNombre || c.otroProy || (c.pid ? 'pid ' + c.pid : 'otra sesión');
+      const yo = c.dir === 'out' ? (c.quien === 'team-lead' ? 'esta sesión' : c.quien) : otro;
+      const a = c.dir === 'out' ? otro : 'esta sesión';
+      return `<div class="msg x ${c.ok ? '' : 'err'}">
+        <div class="hd"><span class="tm">${clock(c.t)}</span><span class="fr">${esc(yo)}</span>
+          <span class="ar">→</span><span class="to">${esc(a)}</span>
+          <span class="tag">${c.ok ? (c.otroProy ? esc(c.otroProy) : 'otra sesión') : esc(c.fallo || 'no llegó')}</span></div>
+        <div class="bd">${esc(c.summary)}</div></div>`;
+    }).join('');
+  }
 }
 
 Pulpos.init($('mapa'), $('ficha'), {

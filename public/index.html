@@ -232,6 +232,25 @@
   .msg.lat .hd .tag{background:color-mix(in srgb,var(--accent-2) 30%,transparent); color:#ff9ec9}
   .msg.lat{background:color-mix(in srgb,var(--accent-2) 8%,transparent); border-left:2px solid var(--accent-2)}
   .msg .bd{font-size:12px; color:var(--txt-2)}
+
+  /* Entre sesiones. Color propio (cian) porque no es ni un mensaje al líder ni uno
+     lateral dentro de un equipo: es otra ventana. El nombre va en monoespaciada porque
+     es una dirección, algo que se copia y se pega para contestar. */
+  .msg.x{background:color-mix(in srgb,#22d3ee 7%,transparent); border-left:2px solid #22d3ee}
+  .msg.x .hd .tag{background:color-mix(in srgb,#22d3ee 26%,transparent); color:#7fd9e8}
+  .msg.x.err{border-left-color:#f97362; background:color-mix(in srgb,#f97362 8%,transparent)}
+  .msg.x.err .hd .tag{background:color-mix(in srgb,#f97362 26%,transparent); color:#f97362}
+  .enlace{display:flex; align-items:center; gap:9px; padding:6px 13px; font-size:12px;
+    border-left:2px solid #22d3ee; cursor:pointer}
+  .enlace.muerta{border-left-color:color-mix(in srgb,#22d3ee 35%,transparent)}
+  .enlace .quien{font-family:var(--mono); font-size:11px; color:var(--txt); font-weight:700}
+  .enlace .flecha{color:#22d3ee; flex:none}
+  .enlace .txt{overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--txt-3); font-size:11px}
+  .enlace .cuenta{margin-left:auto; flex:none; font-family:var(--mono); font-size:9.5px;
+    padding:1px 6px; border-radius:3px; background:color-mix(in srgb,#22d3ee 18%,transparent); color:#7fd9e8}
+  .dir{font-family:var(--mono); font-size:10.5px; color:#7fd9e8;
+    background:color-mix(in srgb,#22d3ee 14%,transparent); padding:1px 6px; border-radius:3px}
+
   .empty{padding:16px 14px; font-family:var(--mono); font-size:11px; color:var(--txt-3); line-height:1.6}
   .empty b{color:var(--warn)}
   /* Explorador del grafo empotrado. Ocupa la ventana entera POR ENCIMA del panel en vez
@@ -299,6 +318,24 @@
   </section>
 
   <!--
+    Sesiones que se hablan entre ellas. No son agentes de nadie: son dos ventanas
+    distintas, cada una con su contexto, coordinándose. El panel enseña con quién habla
+    cada una y su dirección, que es lo que hay que escribir para contestarle.
+
+    IMPACT-OK: sección nueva y aditiva. Mapeo transitivo del repo entero (17 ficheros, sin
+    bundler): este HTML lo sirve `server.mjs` como estático y carga `pulpos.js` y `app.js`
+    por <script src>; nadie más lo referencia salvo `capturas.mjs`, que solo navega a la
+    URL con el navegador para las capturas del README. Los ids nuevos (`enlacesPanel`,
+    `enlaces`, `enlacesnote`) no existían: grep sobre `public/` y `capturas.mjs` no da
+    ningún uso previo, así que no pisan a nadie. Sin producción implicada: panel local de
+    solo lectura en 127.0.0.1.
+  -->
+  <section class="panel" id="enlacesPanel" hidden>
+    <h2>Entre sesiones <span class="note" id="enlacesnote"></span></h2>
+    <div class="list" id="enlaces"></div>
+  </section>
+
+  <!--
     Grafo del código. Aparece SOLO si WARROOM_GRAFO_JSON apunta a un fichero que exista.
     En una máquina sin grafo esta sección no se muestra nunca.
     Sirve para una pregunta concreta: ¿se está usando el grafo, o acabó siendo un adorno?
@@ -341,6 +378,10 @@
       <div class="ficha-ses" id="fichaSes"></div>
     </section>
     <section class="cols" id="cols"></section>
+    <section class="panel" id="crucesPanel" hidden>
+      <h2>Con otras sesiones <span class="note" id="crucesnote"></span></h2>
+      <div class="list" id="cruces"></div>
+    </section>
     <section class="panel" id="morguePanel">
       <h2>Agentes retirados <span class="note" id="morguenote"></span></h2>
       <div class="morgue" id="morgue"></div>

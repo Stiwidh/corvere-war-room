@@ -212,5 +212,38 @@ export function flota(ahora) {
       git: { sucios: 3, sinSeguir: 1, sinSubir: 0, ultimoCommit: ahora - 600 },
     }),
   ];
-  return { now: ahora, error: null, aviso: null, sessions };
+
+  /* Dos sesiones hablándose. No es un equipo: son dos ventanas distintas, cada una con su
+     contexto, coordinándose para no pisarse en el mismo repo. Va en el demo porque es la
+     mitad de lo que enseña el panel y sin ella el capítulo entero sale vacío en las
+     capturas.
+
+     IMPACT-OK: añadido aditivo al final de `flota()`, el único export que usa nadie
+     (`server.mjs` lo importa solo si WARROOM_DEMO=1, y `capturas.mjs` lo arranca así para
+     las imágenes del README). No toca ninguna de las cinco sesiones ya definidas: añade
+     `cruces` a dos de ellas y el `enlaces` del snapshot, que es justo lo que el servidor
+     real calcula ahora. Sin producción implicada: datos inventados para un panel local. */
+  const charla = [
+    ['out', 620, 'Toco precios.ts y la migración de pedidos, no entres ahí'],
+    ['in', 560, 'Recibido. Yo me quedo en cupones, no me acerco a precios'],
+    ['out', 240, 'Migración aplicada, ya puedes rebasar'],
+    ['in', 90, 'Rebasado y en verde. Subo cuando acabes tú'],
+  ];
+  const dos = { id: 'b7d2e8a1-demo-0002', nombre: 'checkout-api-7f', proy: 'checkout-api' };
+  const uno = { id: 'a1c9f4e2-demo-0001', nombre: 'checkout-api-2c', proy: 'checkout-api' };
+  const cruce = (otro, invertido) => charla.map(([dir, hace, summary]) => ({
+    t: ahora - hace, dir: invertido ? (dir === 'out' ? 'in' : 'out') : dir,
+    quien: 'team-lead', pid: 0, ok: true, fallo: '', summary,
+    otroId: otro.id, otroNombre: otro.nombre, otroProy: otro.proy, otroVivo: true,
+  }));
+  sessions[0].nombre = uno.nombre; sessions[0].cruces = cruce(dos, false); sessions[0].cross = charla.length;
+  sessions[1].nombre = dos.nombre; sessions[1].cruces = cruce(uno, true);  sessions[1].cross = charla.length;
+
+  const enlaces = [{
+    a: uno.id, aNombre: uno.nombre, aProy: uno.proy,
+    b: dos.id, bRef: dos.id, bNombre: dos.nombre, bProy: dos.proy, bVivo: true,
+    enviados: 2, recibidos: 2, fallidos: 0, n: 4,
+    ultimo: ahora - 90, ultimoTexto: charla[charla.length - 1][2],
+  }];
+  return { now: ahora, error: null, aviso: null, sessions, enlaces };
 }

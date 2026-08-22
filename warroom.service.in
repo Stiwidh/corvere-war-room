@@ -12,6 +12,15 @@ WorkingDirectory=__DIR__
 # arranque en vez de fijar la versión: así sobrevive a un `nvm install`. Sin
 # nvm, cae al node del PATH.
 ExecStart=/bin/sh -c 'N="$(ls -d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1)"; exec "${N:-$(command -v node)}" server.mjs'
+
+# systemd no hereda tu shell: arranca con un PATH mínimo donde NO está `~/.local/bin`,
+# que es justo donde el instalador oficial deja el binario `claude`. Sin esta línea, el
+# panel corre con una sola de sus dos fuentes: pierde el nombre de cada sesión (que es su
+# dirección para escribirle desde otra), la certeza por sessionId, y la traducción de
+# pid a sesión que necesita todo lo de "entre sesiones". No da error, simplemente falta
+# la mitad del dato. Medido el 2026-08-22 contra el proceso vivo: `command -v claude`
+# desde el PATH del servicio no encontraba nada.
+Environment=PATH=%h/.local/bin:%h/.claude/local:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 Restart=always
 RestartSec=3
 

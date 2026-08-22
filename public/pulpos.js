@@ -14,6 +14,11 @@
  */
 const Pulpos = (() => {
   const COL = { working:'#00E68C', agents:'#c084fc', waiting:'#FFB547', closed:'#5A5766' };
+  /* El cable entre sesiones tiene color propio, y no es un capricho: el magenta ya
+     significa "mensaje lateral entre agentes de un equipo" y el morado "del líder a un
+     agente suyo". Esto es otra cosa, dos ventanas distintas hablándose, y confundirlo con
+     lo de dentro de un equipo sería justo lo que hace ilegible un panel. */
+  const COL_X = '#22d3ee';
   const PAL = ['#9810FA','#E60076','#00E68C','#FFB547','#6fb1ff','#c084fc','#ff9ec9','#00c2b8','#f97362','#8b8ef7','#7ee787'];
   const FAM = {
     lente:        { forma:'hex',     color:'#c084fc', txt:'lente de council' },
@@ -31,6 +36,7 @@ const Pulpos = (() => {
     return Math.floor(s/86400) + ' d';
   };
   const miles = (n) => (n||0).toLocaleString('es');
+  const ahoraSeg = () => Date.now() / 1000;
   const tk = (n) => n >= 1e6 ? (n/1e6).toFixed(1).replace('.',',') + ' M'
                   : n >= 1000 ? Math.round(n/1000) + ' k' : String(n||0);
 
@@ -40,6 +46,12 @@ const Pulpos = (() => {
   let pulsos = [], destellos = [], hover = null, arrastrando = null, foco = null;
   let replay = null;   // { datos, t, playing, vel, idx, alCambiar }
   let vistos = new Map();   // sesión -> timestamp del último mensaje ya animado
+  /* Conversaciones con OTRAS sesiones. No son agentes de nadie: son otra ventana, otro
+     proceso y otro contexto, así que se dibujan como un cable entre cabezas y nunca como
+     un tentáculo. `externos` guarda la punta que no está en el mapa (una sesión cerrada,
+     o de un repo fuera de la ventana) para poder enseñar con quién se habló. */
+  let enlaces = [], externos = new Map();
+  let vistosX = new Map();   // sesión -> último cruce ya animado
 
   /* ── identidad de los agentes ── */
   function familia(nombre){
@@ -177,14 +189,40 @@ const Pulpos = (() => {
     replay.alCambiar?.(replay);
   }
 
-  /* ── entrada de datos ── */
-  function sync(sesiones, now){
+  /* ── entrada de datos ──
+     IMPACT-OK: mapeo transitivo hecho a mano sobre el repo entero (17 ficheros, sin
+     bundler ni imports). Este fichero es un script del navegador servido como estático:
+     su único cargador es `<script src="pulpos.js">` en `public/index.html`, y su único
+     consumidor es `public/app.js`, con 16 llamadas a la API pública del IIFE (init, sync,
+     medir, enfocar, los cinco de replay y soltarTodos). `capturas.mjs`, que es lo que
+     reporta el gate, no lo importa: solo nombra "pulpos" en un comentario en prosa, el
+     mismo falso positivo por stem común que ya documenta la cabecera del fichero. A
+     `sync` le añado un tercer parámetro OPCIONAL, así que las dos llamadas existentes
+     siguen siendo válidas tal cual. Sin producción implicada: panel local de solo lectura
+     servido desde 127.0.0.1, nada desplegado que verificar. */
+  function sync(sesiones, now, enlacesNuevos){
     if (replay) return;   // en replay mandan los datos del transcript, no el vivo
     const vivasIds = new Set(sesiones.map(s => s.id));
+
+    /* Al cerrar una sesión no basta con quitar su cabeza: hay que volver a repartir las
+       zonas, o la del repo que se queda vacío sigue pintada, con su marco y su cabecera y
+       nadie dentro. Se quedaba ahí como una ventana fantasma hasta el siguiente cambio,
+       porque el reparto solo se rehacía al NACER algo y nunca al morir: `cambioZonas` lo
+       marcaba un lead nuevo o un cambio de repo, y el contador de agentes se leía DESPUÉS
+       de borrar los suyos, así que la baja tampoco se notaba por ahí. */
+    const leadsAntes = leads.size;
     for (const id of [...leads.keys()]) if (!vivasIds.has(id)) leads.delete(id);
     for (const [k, a] of agentes) if (!vivasIds.has(a.leadId)) agentes.delete(k);
+    /* Se va el externo si se va su cabeza, y TAMBIÉN si esa sesión ha aparecido en el
+       mapa por su cuenta: una sesión que estaba cerrada y se vuelve a abrir tiene ya su
+       propia cabeza, y dejar el muñón la enseñaba dos veces, una como sesión y otra como
+       punta suelta de un cable que va justo a la de al lado. */
+    for (const [k, e] of externos) {
+      if (!vivasIds.has(e.leadId) || (!foco && leads.has(e.ref))) externos.delete(k);
+    }
 
-    let cambioZonas = false;
+    enlaces = Array.isArray(enlacesNuevos) ? enlacesNuevos : [];
+    let cambioZonas = leads.size !== leadsAntes;
     const antes = agentes.size;
     for (const s of sesiones){
       let L = leads.get(s.id);
@@ -239,6 +277,42 @@ const Pulpos = (() => {
         if (de && a && de !== a) pulsos.push({ a:de, b:a, t:0, lateral: !!m.lateral });
       }
       vistos.set(s.id, ultimoT);
+
+      /* Lo hablado con otras sesiones. La punta de enfrente puede no estar en el mapa
+         (cerrada, o de un repo que ya no entra en la ventana), y aun así hay que poder
+         verla: se le hace un nodo aparte, colgado de la cabeza que sí está. */
+      /* La primera vez que se ve una sesión, su histórico NO se anima: al abrir el panel
+         se lanzaban de golpe los nueve mensajes del día y quedaba una mancha encima de la
+         cabeza que parecía un fallo de pintado. Se anima lo que pasa mientras miras. */
+      const previoX = vistosX.has(s.id) ? vistosX.get(s.id)
+        : (s.cruces || []).reduce((m, c) => Math.max(m, c.t), 0);
+      let ultimoX = previoX;
+      for (const c of (s.cruces || [])){
+        // en foco solo se dibuja la sesión abierta, así que ahí TODAS las puntas son externas
+        if (!foco && c.otroId && leads.has(c.otroId)) continue;   // la otra se pinta sola
+        const ref = c.otroId || (c.pid ? 'pid:' + c.pid : 'nom:' + (c.otroNombre || '?'));
+        const k = s.id + '»' + ref;
+        let E = externos.get(k);
+        if (!E){
+          E = { k, ref, leadId: s.id, nombre: c.otroNombre || '', proy: c.otroProy || '',
+                vivo: !!c.otroVivo, n: 0, ultimo: 0, x: L.x, y: L.y, idx: externos.size };
+          externos.set(k, E);
+        }
+        E.nombre = c.otroNombre || E.nombre; E.proy = c.otroProy || E.proy;
+        E.vivo = !!c.otroVivo;
+        if (c.t > E.ultimo){ E.ultimo = c.t; E.n = (s.cruces || []).filter(x => (x.otroId || ('pid:' + x.pid)) === ref).length; }
+      }
+      for (const c of (s.cruces || [])){
+        if (c.t <= previoX) continue;
+        ultimoX = Math.max(ultimoX, c.t);
+        const otro = c.otroId && leads.get(c.otroId);
+        const ref = c.otroId || (c.pid ? 'pid:' + c.pid : 'nom:' + (c.otroNombre || '?'));
+        const punta = otro || externos.get(s.id + '»' + ref);
+        if (!punta) continue;
+        const de = c.dir === 'out' ? L : punta, a = c.dir === 'out' ? punta : L;
+        pulsos.push({ a:de, b:a, t:0, cross:true, fallo: c.ok === false });
+      }
+      vistosX.set(s.id, ultimoX);
     }
     // el tamaño de cada zona depende de cuántos agentes tiene, así que nacer o
     // retirarse también reordena el reparto
@@ -333,6 +407,24 @@ const Pulpos = (() => {
     const porLead = {};
     for (const a of listaA) porLead[a.leadId] = (porLead[a.leadId]||0)+1;
     for (const a of listaA) a.nHermanos = porLead[a.leadId];
+
+    /* La sesión con la que se habló y que no está en el mapa cuelga de la cabeza que sí
+       está, mirando hacia fuera del lienzo para no meterse entre sus agentes. Sin física:
+       sigue a su cabeza y se queda quieta, que es lo que se espera de algo que ya no
+       trabaja. */
+    const cuantos = {}, puesto = {};
+    for (const e of externos.values()) cuantos[e.leadId] = (cuantos[e.leadId]||0)+1;
+    for (const e of externos.values()){
+      const L = leads.get(e.leadId); if (!L) continue;
+      const i = (puesto[e.leadId] = (puesto[e.leadId]||0)+1) - 1;
+      const n = cuantos[e.leadId];
+      const base = Math.atan2(L.y - H/2, L.x - W/2);
+      const ang = base + (n > 1 ? (i/(n-1) - 0.5) * 1.5 : 0);
+      const d = foco ? 190 : 108;
+      e.r = foco ? 13 : 9.5;
+      e.x = Math.max(e.r+52, Math.min(W-e.r-52, L.x + Math.cos(ang)*d));
+      e.y = Math.max(e.r+26, Math.min(H-e.r-26, L.y + Math.sin(ang)*d));
+    }
   }
 
   /* ── cables ── */
@@ -346,7 +438,20 @@ const Pulpos = (() => {
     const nl=Math.hypot(nx,ny)||1, amp=30+Math.sin(t*0.9)*6;
     return { x:mx+nx/nl*amp, y:my+ny/nl*amp };
   };
+  /* El cable entre sesiones cruza el lienzo entero, a veces de una zona a otra, así que
+     se arquea más: una recta se confundiría con un tentáculo y pasaría por encima de
+     cabezas que no tienen nada que ver. */
+  const ctrlX = (a,b) => {
+    const mx=(a.x+b.x)/2, my=(a.y+b.y)/2, nx=-(b.y-a.y), ny=(b.x-a.x);
+    /* Suelo de 40 en la curvatura: dos sesiones del MISMO repo comparten zona y quedan a
+       un palmo, y con un arco proporcional el cable salía casi recto, con su contador
+       pegado encima de una de las dos cabezas. El techo de 120 es para que entre zonas
+       lejanas no dé una vuelta absurda por el lienzo. */
+    const nl=Math.hypot(nx,ny)||1, amp=Math.max(40, Math.min(120, nl*0.22))+Math.sin(t*0.7)*5;
+    return { x:mx+nx/nl*amp, y:my+ny/nl*amp };
+  };
   function curva(p){
+    if (p.cross) return { p0:p.a, c:ctrlX(p.a,p.b), p1:p.b };
     if (p.lateral) return { p0:p.a, c:ctrlLat(p.a,p.b), p1:p.b };
     const ag = p.a.esLead ? p.b : p.a, L = p.a.esLead ? p.a : p.b;
     return { p0:p.a, c:ctrlTent(L,ag), p1:p.b };
@@ -453,6 +558,34 @@ const Pulpos = (() => {
       ctx.restore();
     }
 
+    /* Las conversaciones entre sesiones van AQUÍ, antes que los tentáculos y que las
+       cabezas: son el fondo sobre el que trabaja cada sesión, no un elemento por encima.
+       Se dibuja el cable aunque ahora mismo no viaje ningún mensaje, porque lo que
+       interesa no es el instante del envío sino que estas dos ventanas se hablan. */
+    if (!foco) for (const e of enlaces){
+      const A = leads.get(e.a), B = e.b && leads.get(e.b);
+      const otro = B || externos.get(e.a + '»' + (e.b || e.bRef));
+      if (!A || !otro || A === otro) continue;
+      const cv = { p0:A, c:ctrlX(A,otro), p1:otro };
+      const reciente = ahoraSeg() - e.ultimo < 900;
+      ctx.save();
+      ctx.strokeStyle = e.fallidos ? '#f9736288' : COL_X + (reciente ? '99' : '44');
+      ctx.lineWidth = reciente ? 2 : 1.3;
+      if (!e.bVivo) ctx.setLineDash([5,5]);
+      ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.quadraticCurveTo(cv.c.x,cv.c.y,otro.x,otro.y); ctx.stroke();
+      ctx.setLineDash([]);
+      // en el punto medio, cuántos mensajes van por ese cable
+      const m = enCurva(cv, 0.5);
+      const txt = `${e.n} ✉`;
+      ctx.font = '700 9px ui-monospace,monospace'; ctx.textAlign = 'center';
+      const an = ctx.measureText(txt).width + 10;
+      ctx.fillStyle = 'rgba(22,22,27,.9)';
+      ctx.beginPath(); ctx.roundRect(m.x-an/2, m.y-8, an, 15, 4); ctx.fill();
+      ctx.fillStyle = e.fallidos ? '#f97362' : COL_X;
+      ctx.fillText(txt, m.x, m.y+3);
+      ctx.restore();
+    }
+
     for (const a of listaA){
       const L = leads.get(a.leadId); if (!L) continue;
       const g = ctx.createLinearGradient(L.x,L.y,a.x,a.y);
@@ -522,6 +655,38 @@ const Pulpos = (() => {
       }
     }
 
+    /* La sesión de enfrente que ya no está en el mapa. Se dibuja hueca y en el color del
+       cable: es una punta de la conversación, no una sesión que puedas abrir. Sin ella,
+       media conversación quedaba en un cable que no iba a ningún sitio. */
+    for (const e of externos.values()){
+      if (!leads.has(e.leadId)) continue;
+      if (foco && e.leadId !== foco) continue;   // en foco, solo con quién habla ESTA
+      // en foco no hay cables largos entre cabezas, así que cada punta lleva el suyo
+      if (foco){
+        const L = leads.get(e.leadId);
+        ctx.save();
+        ctx.strokeStyle = COL_X + (e.vivo ? '88' : '44'); ctx.lineWidth = 1.4;
+        if (!e.vivo) ctx.setLineDash([5,5]);
+        ctx.beginPath(); ctx.moveTo(L.x, L.y); ctx.lineTo(e.x, e.y); ctx.stroke();
+        ctx.restore();
+      }
+      ctx.beginPath(); ctx.arc(e.x,e.y,e.r,0,6.29);
+      ctx.fillStyle = '#1c1c23'; ctx.fill();
+      ctx.save();
+      if (!e.vivo) ctx.setLineDash([3,3]);
+      ctx.strokeStyle = COL_X + (e.vivo ? 'cc' : '77'); ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = COL_X; ctx.font = '700 8px ui-monospace,monospace'; ctx.textAlign = 'center';
+      ctx.fillText('✉', e.x, e.y+3);
+      const et = e.nombre || e.proy || 'otra sesión';
+      ctx.font = '600 9px ui-sans-serif,system-ui';
+      const an = ctx.measureText(et).width + 10;
+      ctx.fillStyle = 'rgba(22,22,27,.86)';
+      ctx.beginPath(); ctx.roundRect(e.x-an/2, e.y+e.r+4, an, 14, 4); ctx.fill();
+      ctx.fillStyle = e.vivo ? '#7fd9e8' : '#5b7f87';
+      ctx.fillText(et, e.x, e.y+e.r+14);
+    }
+
     for (const L of listaL){
       const col = COL[L.estado] || '#5A5766';
       const pulso = L.vivo ? 1+Math.sin(t*2.1+L.fase)*0.05 : 1;
@@ -574,7 +739,8 @@ const Pulpos = (() => {
     }
 
     for (const p of pulsos){
-      const cv = curva(p), col = p.lateral ? '#E60076' : '#c084fc';
+      const cv = curva(p);
+      const col = p.cross ? (p.fallo ? '#f97362' : COL_X) : p.lateral ? '#E60076' : '#c084fc';
       for (let i=1;i<=6;i++){
         const u = p.t - i*0.045; if (u <= 0) break;
         const q = enCurva(cv,u);
@@ -598,7 +764,9 @@ const Pulpos = (() => {
       for (let i=pulsos.length-1;i>=0;i--){
         const p = pulsos[i]; p.t += dt*0.8;
         if (p.t >= 1){
-          destellos.push({ x:p.b.x, y:p.b.y, t:0, color:p.lateral?'#E60076':'#c084fc' });
+          destellos.push({ x:p.b.x, y:p.b.y, t:0,
+                           color: p.cross ? (p.fallo ? '#f97362' : COL_X)
+                                : p.lateral ? '#E60076' : '#c084fc' });
           pulsos.splice(i,1);
         }
       }
@@ -703,6 +871,11 @@ const Pulpos = (() => {
     foco = id;
     for (const L of leads.values()){ L.r = id ? 30 : 21; L.fijo = false; }
     for (const a of agentes.values()){ a.r = id ? 14 : 10.5; a.fijo = false; }
+    /* Entrar o salir del foco cambia qué puntas de conversación son externas: en la flota
+       lo son solo las que no están en el mapa, y en foco lo son todas, porque ahí no se
+       dibuja ninguna otra cabeza. Se vacían para que el siguiente refresco las rehaga con
+       el criterio que toca. */
+    externos.clear();
     repartirZonas();
   }
 
