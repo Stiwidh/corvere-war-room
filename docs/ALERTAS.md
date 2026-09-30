@@ -27,7 +27,7 @@ permisos 600, y `install.sh` lo crea vacío la primera vez.
 | `warroom_sesion_olvidada` | Una sesión lleva **3 h** esperándote | `warning` |
 | `warroom_trabajo_sin_guardar` | Un repo lleva **24 h** con ficheros sueltos sin commitear | `warning` |
 | `warroom_agente_atascado` | Un agente lleva **20 min** sin dar señales | `info` |
-| `warroom_tarea_terminada` | Claude cierra un turno de **10 min** o más y **no estás delante** | `info` |
+| `warroom_tarea_terminada` | Claude cierra un turno de **10 min** o más y **no estás delante**. **Apagado por defecto**: se enciende con `WARROOM_AVISO_TERMINADA=1` | `info` |
 
 Los umbrales están en la constante `UMBRAL`, arriba de `server.mjs`.
 

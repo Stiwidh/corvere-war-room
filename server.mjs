@@ -1286,6 +1286,9 @@ const UMBRAL = { olvidada: 3 * 3600, sinGuardar: 24 * 3600, atascado: 20 * 60,
 /* Los turnos cerrados antes de que arrancara el panel ya están vistos: al leer la cola de
    un transcript salen decenas de ellos, y avisar de todos al reiniciar sería absurdo. */
 const ARRANQUE_PANEL = Date.now() / 1000;
+/* APAGADO por defecto. Un aviso nuevo es una fila más en la base de quien los recibe, y eso
+   se enciende a propósito, no llega solo con una actualización del panel. */
+const AVISO_TERMINADA = ajuste('WARROOM_AVISO_TERMINADA') === '1';
 let ALERTAS_ON = ajuste('WARROOM_ALERTAS') === '1';
 
 /**
@@ -1297,6 +1300,7 @@ let ALERTAS_ON = ajuste('WARROOM_ALERTAS') === '1';
  * Y se cierra en cuanto le contestas, que es también lo que rearma el aviso de esa sesión.
  */
 async function avisoDeTurno(s) {
+  if (!AVISO_TERMINADA) return;
   const evento = 'warroom_tarea_terminada';
   const clave = `${evento}|${s.id}`;
   const titulo = `Terminó en ${historial.nombreDe(s.id) || s.project}`;
@@ -1868,6 +1872,7 @@ const server = http.createServer(async (req, res) => {
       hayDestino: !!urlIngest(),
       umbrales: { olvidada_h: UMBRAL.olvidada / 3600, sinGuardar_h: UMBRAL.sinGuardar / 3600, atascado_min: UMBRAL.atascado / 60,
                   turnoLargo_min: UMBRAL.turnoLargo / 60, ausencia_min: UMBRAL.ausencia / 60 },
+      tareaTerminada: AVISO_TERMINADA,
     }));
   }
   if (url.pathname === '/api/replay') {
