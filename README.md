@@ -400,7 +400,8 @@ permisos 600. `install.sh` lo crea vacío la primera vez. Todo es opcional:
 | `WARROOM_PROD_ESTADO` | El panel de producción, desde un snapshot de tus bases de datos |
 
 **Avisos.** El panel te avisa cuando una sesión lleva 3 h esperándote, un repo lleva 24 h
-con cambios sin guardar o un agente lleva 20 min sin dar señales. Manda un `POST` al
+con cambios sin guardar, un agente lleva 20 min sin dar señales o Claude termina una tarea
+de 10 min o más y no estás delante. Manda un `POST` al
 endpoint que tú le digas, con tu clave, y también los **cierra** cuando la condición
 desaparece. El contrato completo y un receptor de ejemplo que funciona, en
 [`docs/ALERTAS.md`](docs/ALERTAS.md).

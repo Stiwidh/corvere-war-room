@@ -20,15 +20,24 @@ WARROOM_ALERT_KEY=una-clave-larga-tuya
 Sin las tres cosas no se manda nada. El fichero vive fuera del repositorio y en
 permisos 600, y `install.sh` lo crea vacío la primera vez.
 
-## Los tres avisos
+## Los cuatro avisos
 
 | Aviso | Cuándo salta | Severidad |
 |---|---|---|
 | `warroom_sesion_olvidada` | Una sesión lleva **3 h** esperándote | `warning` |
 | `warroom_trabajo_sin_guardar` | Un repo lleva **24 h** con ficheros sueltos sin commitear | `warning` |
 | `warroom_agente_atascado` | Un agente lleva **20 min** sin dar señales | `info` |
+| `warroom_tarea_terminada` | Claude cierra un turno de **10 min** o más y **no estás delante** | `info` |
 
 Los umbrales están en la constante `UMBRAL`, arriba de `server.mjs`.
+
+**Cómo sabe que ha terminado, y que no estás.** Que el transcript deje de crecer no vale:
+un comando largo tampoco escribe mientras corre. Lo que cuenta es que Claude cierre su
+turno (`stop_reason: end_turn`), que queda escrito. Y la duración sola no basta: medido
+sobre 14 días de uso real, los turnos de 10 min o más fueron 8 al día de mediana y 25 el
+día más cargado. Así que se espera 3 min (`UMBRAL.ausencia`) y solo sale si en ese rato no
+le has contestado ni has escrito en ninguna otra sesión: si estás escribiendo, estás
+delante del equipo y ya lo ves. Se cierra en cuanto le contestas.
 
 ## Qué recibe tu endpoint
 

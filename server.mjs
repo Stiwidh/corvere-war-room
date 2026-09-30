@@ -676,6 +676,8 @@ function blankSession(id, cwd, branch) {
     // el hilo principal es un trabajador más: la mayoría de las sesiones no
     // lanzan un solo agente y aun así hacen cientos de acciones
     lead: { last: '', lastAt: 0, tool: '', acts: 0, toks: 0, recent: [] },
+    // turnos: cuándo le pediste algo, cuándo te devolvió la palabra y lo último que dijo
+    inicioTurno: 0, ultimoHumano: 0, finTurno: null, ultimoDicho: '',
   };
 }
 
@@ -776,6 +778,27 @@ function ingest(s, who, o) {
     }
   }
 
+  /* TURNOS DEL HILO PRINCIPAL, para el aviso de "terminó".
+     Que el transcript deje de crecer NO dice que Claude haya acabado: un comando largo
+     (un build, una prueba) tampoco escribe nada mientras corre. Lo que sí lo dice es que
+     cierre su turno (`stop_reason: end_turn`), y eso queda escrito. Un mensaje tuyo es un
+     `user` que no es resultado de herramienta ni texto del sistema (lo que empieza por `<`). */
+  if (!who && !o.isSidechain) {
+    if (o.type === 'user' && !o.isMeta) {
+      const bloques = Array.isArray(content) ? content : null;
+      const esResultado = bloques?.some((b) => b && b.type === 'tool_result');
+      const texto = typeof content === 'string' ? content
+        : bloques ? bloques.map((b) => (b && b.type === 'text' ? b.text || '' : '')).join(' ') : '';
+      if (!esResultado && texto.trim() && !texto.trim().startsWith('<')) {
+        s.inicioTurno = t;
+        if (t > s.ultimoHumano) s.ultimoHumano = t;
+      }
+    } else if (o.type === 'assistant' && msg?.stop_reason === 'end_turn' && s.inicioTurno) {
+      s.finTurno = { t, dur: t - s.inicioTurno, visto: false, avisado: null };
+      s.inicioTurno = 0;
+    }
+  }
+
   if (!Array.isArray(content)) return;
 
   /* El acuse del envío llega en la línea siguiente, como resultado de la herramienta:
@@ -809,6 +832,7 @@ function ingest(s, who, o) {
         a.recent.unshift({ t, tool: '✎', d: dice.slice(0, 160), dice: true });
         a.recent.length = Math.min(a.recent.length, ACT_KEEP);
       } else if (dice.length > 25) {
+        s.ultimoDicho = dice;
         s.lead.recent.unshift({ t, tool: '✎', d: dice.slice(0, 160), dice: true });
         s.lead.recent.length = Math.min(s.lead.recent.length, ACT_KEEP);
       }
@@ -1253,8 +1277,57 @@ function avisosDe(s) {
 }
 
 /** Umbrales de los cuatro avisos aprobados. */
-const UMBRAL = { olvidada: 3 * 3600, sinGuardar: 24 * 3600, atascado: 20 * 60 };
+/* `turnoLargo` y `ausencia` son del aviso de "terminó". Medido el 2026-09-30 sobre 14 días
+   de transcripts: turnos cerrados de 10 min o más, mediana de 8 al día y 25 el día más
+   cargado. Por eso no basta con la duración: solo se avisa si en `ausencia` segundos no has
+   contestado a esa sesión ni escrito en ninguna otra, o sea, si no estás delante. */
+const UMBRAL = { olvidada: 3 * 3600, sinGuardar: 24 * 3600, atascado: 20 * 60,
+                 turnoLargo: 10 * 60, ausencia: 3 * 60 };
+/* Los turnos cerrados antes de que arrancara el panel ya están vistos: al leer la cola de
+   un transcript salen decenas de ellos, y avisar de todos al reiniciar sería absurdo. */
+const ARRANQUE_PANEL = Date.now() / 1000;
 let ALERTAS_ON = ajuste('WARROOM_ALERTAS') === '1';
+
+/**
+ * "Terminó": un turno largo que acaba y te devuelve la palabra sin que estés delante.
+ *
+ * Se decide `ausencia` segundos después del cierre, no en el momento: si para entonces le
+ * has contestado, o has escrito en cualquier otra sesión, estás en el equipo y ya lo ves
+ * (el panel, o el hook que avisa dentro de la sesión en la que escribes). Solo si no, sale.
+ * Y se cierra en cuanto le contestas, que es también lo que rearma el aviso de esa sesión.
+ */
+async function avisoDeTurno(s) {
+  const evento = 'warroom_tarea_terminada';
+  const clave = `${evento}|${s.id}`;
+  const titulo = `Terminó en ${historial.nombreDe(s.id) || s.project}`;
+  /* Se cierra en cuanto le contestas. Se mira en `yaAvisado`, que se guarda en disco, y
+     no solo en la sesión en memoria: si el panel se reinicia con un aviso abierto, así lo
+     sigue cerrando (y sin cerrarlo, el filtro de 6 h callaría el siguiente de esa sesión). */
+  const emitido = yaAvisado.get(clave);
+  if (emitido && s.ultimoHumano > emitido) {
+    await resolver({ event_type: evento, title: s.finTurno?.avisado || titulo });
+    yaAvisado.delete(clave);
+    guardarMemoriaDeAvisos();
+    if (s.finTurno?.avisado) s.finTurno = null;
+    return;
+  }
+  const f = s.finTurno;
+  if (!f || f.visto || f.avisado) return;
+  if (f.t < ARRANQUE_PANEL || f.dur < UMBRAL.turnoLargo || s.ultimoHumano > f.t) { f.visto = true; return; }
+  const edad = now() - f.t;
+  if (edad < UMBRAL.ausencia) return;
+  f.visto = true;
+  // más tarde de lo previsto (el panel estuvo parado): ya no es un aviso a tiempo
+  if (edad > UMBRAL.ausencia + 600) return;
+  if ([...sessions.values()].some((o) => o.ultimoHumano > f.t)) return;   // estás delante
+  const ok = await emitir({
+    severity: 'info', event_type: evento, title: titulo,
+    message: `${Math.round(f.dur / 60)} min trabajando y te ha devuelto el turno.`
+      + (s.ultimoDicho ? ` Lo último: ${s.ultimoDicho.slice(0, 160)}` : ''),
+    metadata: { sesion: s.id, proyecto: s.project, minutos: Math.round(f.dur / 60) },
+  });
+  if (ok) f.avisado = titulo;
+}
 
 async function revisarAvisos() {
   if (!ALERTAS_ON) return;
@@ -1288,6 +1361,7 @@ async function revisarAvisos() {
         guardarMemoriaDeAvisos();
       }
     }
+    await avisoDeTurno(s);
     for (const a of s.agents.values()) {
       if (!a.retired && a.last && now() - a.last > UMBRAL.atascado) {
         await emitir({
@@ -1792,7 +1866,8 @@ const server = http.createServer(async (req, res) => {
       activas: ALERTAS_ON,
       hayClave: !!claveIngest(),
       hayDestino: !!urlIngest(),
-      umbrales: { olvidada_h: UMBRAL.olvidada / 3600, sinGuardar_h: UMBRAL.sinGuardar / 3600, atascado_min: UMBRAL.atascado / 60 },
+      umbrales: { olvidada_h: UMBRAL.olvidada / 3600, sinGuardar_h: UMBRAL.sinGuardar / 3600, atascado_min: UMBRAL.atascado / 60,
+                  turnoLargo_min: UMBRAL.turnoLargo / 60, ausencia_min: UMBRAL.ausencia / 60 },
     }));
   }
   if (url.pathname === '/api/replay') {
