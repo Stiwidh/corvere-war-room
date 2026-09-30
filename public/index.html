@@ -6,14 +6,24 @@
 <title>Corvere War Room</title>
 <link id="favicon" rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
+  /* La paleta oscura del resto de paneles de la casa: morado y magenta sobre carbón.
+     Las fuentes se quedan en las del sistema a propósito: el README promete que nada sale
+     de esta máquina, y una hoja de Google Fonts sería justo eso. */
   :root{
+    color-scheme:dark;
     --void:#111114; --void-2:#16161b; --surf:#1a1a1f; --surf-2:#202027;
-    --line:#26262f; --line-soft:#1f1f27;
-    --txt:#F8FAFC; --txt-2:#A9A6B4; --txt-3:#6E6B7A; --dim:#4c4956;
-    --accent:#9810FA; --accent-2:#E60076; --accent-soft:#c084fc;
-    --ok:#00E68C; --warn:#FFB547; --err:#EF5350; --idle:#5A5766;
+    --line:rgba(255,255,255,.08); --line-soft:rgba(255,255,255,.06); --line-ui:rgba(255,255,255,.14);
+    --txt:#F8FAFC; --txt-2:#d1d5dc; --txt-3:#94A3B8; --dim:#5c6370;
+    --accent:#9810FA; --accent-2:#E60076; --accent-soft:#c084fc; --accent-strong:#C77DFF;
+    --ok:#00E68C; --warn:#FFB547; --err:#EF5350; --info:#60A5FA; --idle:#5A5766; --x:#22d3ee;
     --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
     --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    /* El relieve (glow-active): luz blanca desde arriba y halo del acento
+       desde abajo. El acento se usa como LUZ y como línea, casi nunca como relleno. */
+    --glow-luz:inset 0 2px 6px rgba(255,255,255,.16);
+    --glow-halo:0 -4px 9px;
+    --glow-tint:color-mix(in srgb,var(--accent) 55%,transparent);
+    --glow-active-shadow:var(--glow-luz),inset var(--glow-halo) var(--glow-tint);
   }
   *{box-sizing:border-box}
   html,body{height:100%}
@@ -265,6 +275,224 @@
   .expl-bar button{margin-left:auto}
   .expl iframe{flex:1; width:100%; border:0; background:var(--void)}
 
+  /* ── historial ── */
+  button[aria-pressed="true"]{border-color:var(--accent); color:var(--txt)}
+  button.ok{border-color:var(--ok); color:var(--ok)}
+  .hist-bar{padding:9px 13px; border-bottom:1px solid var(--line-soft)}
+  .hist-bar input{width:100%; max-width:480px; background:var(--void); border:1px solid var(--line);
+    border-radius:6px; color:var(--txt); font-family:var(--mono); font-size:11.5px; padding:6px 10px}
+  .hist-bar input:focus{outline:none; border-color:var(--accent)}
+  .hist-lista{max-height:min(64vh,680px); overflow-y:auto; padding:2px 0 10px}
+  .hist-dia{font-family:var(--mono); font-size:9.5px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--txt-3); padding:12px 13px 4px}
+  .hist-fila{display:grid; grid-template-columns:8px minmax(0,1fr) auto; column-gap:10px; row-gap:2px;
+    align-items:center; padding:6px 13px; border-left:2px solid transparent; cursor:pointer}
+  .hist-fila:hover{background:var(--surf)}
+  .hist-fila.abierta{background:var(--surf); border-left-color:var(--accent)}
+  .hist-fila.borrada .hist-tit{color:var(--txt-3); text-decoration:line-through; text-decoration-color:var(--idle)}
+  .hist-fila .punto{width:7px; height:7px; border-radius:50%}
+  .hist-tit{font-size:12.5px; font-weight:700; color:var(--txt-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .hist-tit.propio{color:var(--txt)}
+  .hist-sub{grid-column:2 / 4; font-size:11px; color:var(--txt-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .hist-meta{display:flex; gap:9px; align-items:center; font-family:var(--mono); font-size:10px;
+    color:var(--txt-3); white-space:nowrap}
+  .hist-meta .proy{color:var(--txt-2)}
+  .hist-meta button{padding:2px 8px; font-size:10px}
+  .hist-tag{font-size:9px; letter-spacing:.06em; text-transform:uppercase; font-weight:700}
+  .hist-tag.warn{color:var(--warn)}
+  .hist-mas{grid-column:2 / 4; display:flex; flex-direction:column; gap:7px; padding:8px 0 4px; cursor:default}
+  .hist-cmd{display:block; font-family:var(--mono); font-size:11px; background:var(--void);
+    border:1px solid var(--line-soft); border-radius:6px; padding:7px 10px; color:var(--txt-2);
+    user-select:all; word-break:break-all; white-space:pre-wrap}
+  .hist-datos{display:flex; gap:14px; flex-wrap:wrap; font-family:var(--mono); font-size:10px; color:var(--txt-3)}
+  .hist-primero{font-size:11.5px; color:var(--txt-2); line-height:1.5}
+  .hist-primero .l{display:block; font-family:var(--mono); font-size:9px; letter-spacing:.09em;
+    text-transform:uppercase; color:var(--txt-3)}
+  .hist-aviso{font-family:var(--mono); font-size:11px; color:var(--warn)}
+  .hist-apagado{margin:10px 13px 4px; border:1px solid color-mix(in srgb,var(--warn) 38%,var(--line));
+    border-radius:8px; background:color-mix(in srgb,var(--warn) 5%,var(--void-2)); overflow:hidden}
+  .hist-apagado-cab{display:flex; gap:10px; align-items:baseline; padding:9px 13px 5px;
+    font-size:12px; font-weight:700; color:var(--warn)}
+  .hist-apagado-cab .note{font-family:var(--mono); font-size:10px; font-weight:500; color:var(--txt-3)}
+  .hist-mas-btn{display:block; margin:10px auto 0}
+  .alias-input{width:100%; max-width:420px; background:var(--void); border:1px solid var(--accent);
+    border-radius:5px; color:var(--txt); font-family:var(--sans); font-size:12.5px; padding:3px 8px}
+  .alias-input:focus{outline:none}
+  /* el nombre en la ficha de la sesión abierta */
+  .alias-fila{flex-basis:100%; display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+  .alias-fila .alias{font-size:14px; font-weight:700; color:var(--txt)}
+  .alias-fila .sin{font-size:12px; font-weight:500; color:var(--txt-3); font-style:italic}
+  @media (max-width:760px){
+    .hist-fila{grid-template-columns:8px minmax(0,1fr)}
+    .hist-meta{grid-column:2; flex-wrap:wrap; white-space:normal}
+    .hist-sub,.hist-mas{grid-column:2}
+  }
+
+  /* ═══ CAPA DE RELIEVE: el mismo lenguaje visual que el resto de paneles de la casa ═══
+     Va al final a propósito: pisa lo de arriba sin reescribirlo, y todo lo que es estilo
+     nuevo se lee en un solo sitio. Tres reglas de fondo, las mismas de allí:
+       · lo seleccionado se ELEVA (glow-active), no se rellena de morado
+       · cada bloque lleva su color en `--t`, que tiñe su punto, su borde y su fondo
+       · el degradado morado→magenta es solo para la acción principal, y solo una a la vez */
+  body{background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),
+                        linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px)}
+  :where(button,a,input,summary,[tabindex]):focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+
+  /* tarjetas: superficie con un hilo de luz arriba */
+  .bar,.panel,.agent{background:linear-gradient(180deg,var(--surf),var(--void-2)); border:1px solid var(--line);
+    border-radius:14px; box-shadow:inset 0 1px 0 rgba(255,255,255,.03),0 2px 6px rgba(0,0,0,.35)}
+  .agent.live{border-color:color-mix(in srgb,var(--ok) 40%,var(--line));
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.03),0 10px 26px -16px color-mix(in srgb,var(--ok) 70%,transparent)}
+
+  /* cabecera de panel: un punto que brilla en el color del panel */
+  .panel{--t:var(--accent-soft)}
+  .panel > h2{color:color-mix(in srgb,var(--t) 45%,var(--txt-2)); letter-spacing:.14em;
+    border-bottom-color:color-mix(in srgb,var(--t) 18%,var(--line-soft))}
+  .panel > h2::before{content:""; width:7px; height:7px; border-radius:50%; flex:none; background:var(--t);
+    box-shadow:0 0 10px color-mix(in srgb,var(--t) 70%,transparent)}
+  #diaPanel,#grafoPanel,#vistasPanel{--t:var(--info)}
+  #cerradasPanel,#morguePanel{--t:var(--idle)}
+  #enlacesPanel,#crucesPanel{--t:var(--x)}
+  #prodPanel{--t:var(--ok)}
+  #consumoPanel{--t:var(--accent-2)}
+
+  /* botones: fantasma en reposo, relieve cuando están activos */
+  button{background:rgba(255,255,255,.06); border:1px solid var(--line-ui); color:var(--txt-2); border-radius:8px;
+    transition:background .15s,border-color .15s,color .15s,box-shadow .15s}
+  button:hover{background:rgba(255,255,255,.1); border-color:rgba(255,255,255,.22); color:var(--txt)}
+  button:disabled{opacity:.5; cursor:default}
+  button[aria-pressed="true"],.vtab.on,.r-vel[aria-pressed="true"]{border-color:rgba(255,255,255,.26);
+    background:rgba(255,255,255,.03); color:var(--txt); box-shadow:var(--glow-active-shadow)}
+  button.ok{border-color:color-mix(in srgb,var(--ok) 45%,transparent); color:var(--ok);
+    background:color-mix(in srgb,var(--ok) 10%,transparent); box-shadow:none}
+  .vtabs{padding:3px; gap:3px; background:rgba(255,255,255,.04); border:1px solid var(--line); border-radius:10px}
+  .vtab{border-color:transparent; background:transparent; border-radius:7px}
+  /* la acción que importa lleva el degradado de marca; en el historial, solo la fila
+     sobre la que estás, para que no haya ochenta botones morados a la vez */
+  .cta,.hist-fila:hover [data-accion="copiar"]:not(.ok),.hist-fila.abierta [data-accion="copiar"]:not(.ok){
+    background:linear-gradient(to right,var(--accent),var(--accent-2)); color:#fff; border-color:transparent;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 2px 10px color-mix(in srgb,var(--accent) 34%,transparent)}
+  .cta:hover{filter:brightness(1.08)}
+
+  /* KPIs: cada uno teñido por lo que cuenta */
+  .kpis{gap:8px}
+  .kpi{--t:var(--txt-3); padding:6px 12px 7px; border-radius:10px; min-width:88px;
+    background:linear-gradient(155deg,color-mix(in srgb,var(--t) 12%,var(--surf)),var(--surf) 75%);
+    border:1px solid color-mix(in srgb,var(--t) 24%,transparent); transition:transform .16s,border-color .16s,box-shadow .16s}
+  .kpi:hover{transform:translateY(-1px); border-color:color-mix(in srgb,var(--t) 50%,transparent);
+    box-shadow:0 8px 20px -10px color-mix(in srgb,var(--t) 60%,transparent)}
+  .kpi .lab{color:color-mix(in srgb,var(--t) 55%,var(--txt-3))}
+  .kpi .val{color:color-mix(in srgb,var(--t) 70%,var(--txt))}
+  .kpi.ok{--t:var(--ok)} .kpi.warn{--t:var(--warn)} .kpi.acc{--t:var(--accent-soft)}
+  .kpi.hot{--t:var(--accent-2)} .kpi.x{--t:var(--x)} .kpi.err{--t:var(--err)}
+  .kpi.cero{--t:var(--idle)}   /* un cero no tiene por qué llamar la atención */
+  .kpi.cero .val{color:var(--txt-3)}
+
+  /* puntos de estado: brillan en su color, y late el que está trabajando */
+  .live-dot{box-shadow:0 0 8px color-mix(in srgb,var(--ok) 70%,transparent)}
+  .punto{--p:var(--idle); background:var(--p) !important; box-shadow:0 0 8px color-mix(in srgb,var(--p) 65%,transparent)}
+  .late{animation:latido 2.4s ease-out infinite}
+  @keyframes latido{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--p) 60%,transparent)}
+    70%{box-shadow:0 0 0 6px transparent} 100%{box-shadow:0 0 0 0 transparent}}
+
+  /* pastillas con LED, las de StatusBadge */
+  .hist-tag{--t:var(--txt-3); display:inline-flex; align-items:center; gap:5px; padding:1px 8px 1px 6px;
+    border-radius:20px; color:var(--t); background:color-mix(in srgb,var(--t) 12%,transparent);
+    border:1px solid color-mix(in srgb,var(--t) 30%,transparent); font-size:9px}
+  .hist-tag::before{content:""; width:5px; height:5px; border-radius:50%; background:currentColor}
+  .hist-tag.warn{--t:var(--warn)} .hist-tag.ok{--t:var(--ok)} .hist-tag.acc{--t:var(--accent-soft)}
+  .hist-tag.idle{--t:var(--idle)} .hist-tag.x{--t:var(--x)}
+
+  /* filas del historial: se iluminan en el color de su estado al pasar por encima */
+  .hist-fila{--t:var(--accent-soft); margin:0 6px; border:1px solid transparent; border-radius:10px;
+    transition:background .16s,border-color .16s}
+  .hist-fila:hover,.hist-fila.abierta{background:linear-gradient(160deg,color-mix(in srgb,var(--t) 8%,var(--surf)),var(--surf) 70%);
+    border-color:color-mix(in srgb,var(--t) 26%,transparent)}
+  .hist-fila.abierta{border-left-color:color-mix(in srgb,var(--t) 26%,transparent)}
+  .hist-dia{color:color-mix(in srgb,var(--accent-soft) 40%,var(--txt-3))}
+
+  /* lo que tenías abierto al apagar: bloque destacado, con su borde de color arriba */
+  .hist-apagado{background:linear-gradient(160deg,color-mix(in srgb,var(--warn) 10%,var(--surf)),var(--void-2) 65%);
+    border:1px solid color-mix(in srgb,var(--warn) 26%,var(--line)); border-top:3px solid var(--warn); border-radius:12px}
+
+  /* campos */
+  .hist-bar input,.alias-input,.buscar-input{background:var(--surf); border:1px solid var(--line-ui); border-radius:8px}
+  .hist-bar input:focus,.alias-input:focus,.buscar-input:focus{outline:none; border-color:var(--accent);
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 15%,transparent)}
+
+  /* buscar dentro de las conversaciones */
+  .hist-bar{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+  .hist-bar input{flex:1; min-width:220px}
+  .hist-busca-cab{display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:10px 13px 6px;
+    font-size:12px; font-weight:700; color:var(--txt)}
+  .hist-busca-cab .note{font-family:var(--mono); font-size:10px; font-weight:500; color:var(--txt-3)}
+  .hist-busca-cab button{margin-left:auto}
+  .hall-lista{grid-column:2 / 4; display:flex; flex-direction:column; gap:3px; padding:4px 0 2px; cursor:default}
+  .hall{display:grid; grid-template-columns:52px 118px minmax(0,1fr); gap:8px; font-size:11.5px; align-items:baseline}
+  .hall .quien{font-family:var(--mono); font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--accent-soft)}
+  .hall .quien.tu{color:var(--warn)}
+  .hall .cuando{font-family:var(--mono); font-size:9.5px; color:var(--txt-3)}
+  .hall .txt{color:var(--txt-2); line-height:1.45}
+  .hall mark{background:color-mix(in srgb,var(--accent) 30%,transparent); color:var(--txt); border-radius:3px; padding:0 2px}
+
+  /* retomar: dónde se quedó la sesión */
+  .ret-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:8px; align-items:start}
+  .ret{background:rgba(255,255,255,.03); border:1px solid var(--line-soft); border-radius:10px; padding:8px 11px; min-width:0}
+  .ret .l{display:block; font-family:var(--mono); font-size:9px; letter-spacing:.1em; text-transform:uppercase;
+    color:color-mix(in srgb,var(--accent-soft) 45%,var(--txt-3)); margin-bottom:3px}
+  .ret p{margin:0; font-size:12px; color:var(--txt-2); line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere;
+    display:-webkit-box; -webkit-line-clamp:5; -webkit-box-orient:vertical; overflow:hidden}
+  .ret p.largo{-webkit-line-clamp:9}
+  .ret ul{margin:0; padding-left:16px; font-size:12px; color:var(--txt-2)}
+  .ret .aviso{color:var(--warn); font-weight:600}
+  .ret-borr{grid-column:1 / -1; border:1px solid var(--line-soft); border-radius:10px; padding:6px 11px; background:rgba(255,255,255,.02)}
+  .ret-borr > summary{cursor:pointer; font-family:var(--mono); font-size:10px; color:var(--txt-2); display:flex; gap:10px; list-style:none}
+  .ret-borr > summary::-webkit-details-marker{display:none}
+  .ret-borr > summary::before{content:'▸'; color:var(--txt-3); transition:transform .12s}
+  .ret-borr[open] > summary::before{transform:rotate(90deg)}
+  .ret-borr pre{margin:8px 0 2px; font-family:var(--mono); font-size:10.5px; color:var(--txt-2); white-space:pre-wrap;
+    overflow-wrap:anywhere; max-height:320px; overflow:auto}
+  .cargando{animation:parpadeo 1.4s ease-in-out infinite}
+  @keyframes parpadeo{50%{opacity:.45}}
+
+  /* consumo */
+  .cons{padding:12px 14px 16px; display:flex; flex-direction:column; gap:16px}
+  .cons-kpis{display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px}
+  .cons-kpis .kpi{display:flex; flex-direction:column; padding:10px 14px}
+  .cons-kpis .kpi .val{font-size:22px}
+  .cons-kpis .kpi .sub{font-family:var(--mono); font-size:9.5px; color:var(--txt-3); margin-top:2px}
+  .cons-tit{font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--txt-3);
+    display:flex; gap:10px; align-items:baseline; margin-bottom:6px}
+  .cons-tit .note{letter-spacing:0; text-transform:none}
+  .cons-barras{display:flex; align-items:flex-end; gap:2px; height:150px; border-bottom:1px solid var(--line)}
+  .cons-col{flex:1; height:100%; display:flex; align-items:flex-end; justify-content:center; min-width:0}
+  .cons-bar{width:100%; max-width:36px; background:var(--accent-soft); border-radius:4px 4px 0 0; transition:filter .12s}
+  .cons-col:hover .cons-bar{filter:brightness(1.3)}
+  .cons-ejes{display:flex; gap:2px; margin-top:4px}
+  .cons-ejes span{flex:1; min-width:0; text-align:center; font-family:var(--mono); font-size:9px; color:var(--txt-3); white-space:nowrap; overflow:visible}
+  .cons-tip{position:fixed; z-index:70; pointer-events:none}
+  .cons-tabla{display:flex; flex-direction:column}
+  .cons-fila{display:grid; grid-template-columns:minmax(0,2.2fr) minmax(0,1fr) minmax(140px,1.4fr) 76px 86px; gap:10px;
+    align-items:center; padding:5px 6px; border-bottom:1px solid var(--line-soft); font-size:12px; cursor:pointer; border-radius:6px}
+  .cons-fila:hover{background:rgba(255,255,255,.04)}
+  .cons-fila.cab{cursor:default; font-family:var(--mono); font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:var(--txt-3)}
+  .cons-fila.cab:hover{background:none}
+  .cons-fila .nom,.cons-h .nom{overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--txt)}
+  .cons-fila .note,.cons-h .note{font-family:var(--mono); font-size:10px; color:var(--txt-3)}
+  .cons-celda{display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:11px}
+  .barrita{height:6px; min-width:2px; background:var(--accent-soft); border-radius:3px; flex:none; max-width:70%}
+  .cons-cols{display:grid; grid-template-columns:1fr 1fr; gap:20px}
+  .cons-h{display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.3fr); gap:10px; align-items:center; padding:4px 0;
+    border-bottom:1px solid var(--line-soft); font-size:12px}
+  @media (max-width:760px){
+    .cons-cols{grid-template-columns:1fr}
+    .cons-fila{grid-template-columns:minmax(0,1fr) 80px}
+    .cons-fila > :nth-child(2),.cons-fila > :nth-child(4),.cons-fila > :nth-child(5){display:none}
+    .hall{grid-template-columns:44px minmax(0,1fr)} .hall .cuando{display:none}
+  }
+
+  @media (prefers-reduced-motion:reduce){.late,.cargando{animation:none}}
+
   [hidden]{display:none !important}
   @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms !important; transition-duration:.01ms !important}}
 </style>
@@ -279,9 +507,44 @@
     <div class="kpis" id="kpis"></div>
     <!-- Arriba y siempre visible: es una herramienta, no el pie de una vista. Estaba al
          fondo del último panel y había que bajar cuatro secciones para dar con ella. -->
+    <!-- IMPACT-OK: botón y panel nuevos (`b-historial`, `histPanel`, `hist`, `hist-q`,
+         `histnote`), ids sin uso previo (grep sobre public/ y capturas.mjs). Los consume
+         solo `historial.js`, que se carga antes que `app.js`. Sin producción implicada. -->
+    <button id="b-historial" type="button" class="mini" aria-pressed="false">🕘 historial</button>
+    <button id="b-consumo" type="button" class="mini" aria-pressed="false">📊 consumo</button>
     <button id="b-explorador" type="button" class="mini">🕸 explorar el grafo</button>
     <button id="back" type="button" hidden>← volver a la flota</button>
   </div>
+
+  <!--
+    Historial: todas las sesiones que siguen en disco, no solo las de la ventana del mapa,
+    con el comando para reanudar cada una y el nombre que les pongas. Arriba del todo
+    porque se abre para buscar algo, no para mirarlo de reojo.
+  -->
+  <section class="panel" id="histPanel" hidden>
+    <h2>Historial de sesiones <span class="note" id="histnote"></span></h2>
+    <div class="hist-bar">
+      <input id="hist-q" type="search" autocomplete="off" spellcheck="false"
+             placeholder="filtra por nombre, proyecto o rama"
+             title="Escribir filtra al momento. Enter busca además dentro de lo que dijisteis tú y Claude"
+             aria-label="buscar en el historial">
+      <button id="hist-dentro" type="button" class="mini">🔎 buscar dentro de las conversaciones</button>
+    </div>
+    <div class="hist-lista" id="hist"></div>
+  </section>
+
+  <!-- Consumo de tokens por día, sesión, carpeta y modelo. Lo sirve /api/consumo, que lo
+       calcula de los mismos transcripts y lo guarda en ~/.local/state/warroom/tokens.json. -->
+  <section class="panel" id="consumoPanel" hidden>
+    <h2>Consumo de tokens
+      <span class="vtabs" id="cons-rango">
+        <button type="button" class="vtab on" data-d="7">7 días</button>
+        <button type="button" class="vtab" data-d="30">30 días</button>
+        <button type="button" class="vtab" data-d="90">90 días</button>
+      </span>
+      <span class="note" id="consnote"></span></h2>
+    <div class="cons" id="consumo"></div>
+  </section>
 
   <section class="panel" id="mapaPanel">
     <h2>Mapa de la flota
@@ -412,7 +675,11 @@
   </div>
   <iframe id="explFrame" title="Explorador del grafo" src="about:blank"></iframe>
 </div>
+<div class="ficha cons-tip" id="consTip" role="tooltip"></div>
 <script src="pulpos.js"></script>
+<script src="retomar.js"></script>
+<script src="historial.js"></script>
+<script src="consumo.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

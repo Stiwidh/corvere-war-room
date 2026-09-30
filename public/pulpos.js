@@ -239,6 +239,10 @@ const Pulpos = (() => {
       L.vivo = (now - (s.lead?.lastAt || 0)) < WORKING;
       // lo que antes llevaba la tarjeta y hacía falta de un vistazo
       L.rama = s.branch || ''; L.equipo = s.hasTeam; L.git = s.git; L.nombre = s.nombre || '';
+      /* IMPACT-OK: campo nuevo `alias` (el nombre que le pones desde el panel) que solo se
+         lee aquí, en la etiqueta de la cabeza y en su ficha flotante. `nombre` sigue siendo
+         la dirección que da Claude y no cambia. Único consumidor: `app.js`. Sin producción. */
+      L.alias = s.alias || '';
       L.doc = s.doc; L.colgando = s.colgando || 0;
       L.acts = s.acts; L.toks = s.toks; L.up = s.up; L.lat = s.lat;
       L.desde = s.startedAt;
@@ -481,26 +485,42 @@ const Pulpos = (() => {
       ctx.save();
       // superficie propia: el repo tiene que leerse como un recinto, no como
       // cuatro rayas sueltas
-      ctx.beginPath(); ctx.roundRect(x, y, an, al, 12);
-      ctx.fillStyle = '#191920'; ctx.fill();
-      ctx.strokeStyle = '#33303d'; ctx.lineWidth = 1.2; ctx.stroke();
+      /* IMPACT-OK: solo colores y un punto nuevo en la cabecera de la zona, dentro de
+         `dibujar`, que no tiene más consumidor que el bucle de este mismo fichero. El
+         aspecto sigue el del resto de paneles de la casa (superficie con degradado,
+         líneas en blanco translúcido, punto que brilla en el color del estado). */
+      ctx.beginPath(); ctx.roundRect(x, y, an, al, 14);
+      const fondo = ctx.createLinearGradient(0, y, 0, y + al);
+      fondo.addColorStop(0, '#1a1a1f'); fondo.addColorStop(1, '#16161b');
+      ctx.fillStyle = fondo; ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,.08)'; ctx.lineWidth = 1.2; ctx.stroke();
       // franja de cabecera
       ctx.save();
       ctx.clip();
-      ctx.fillStyle = '#1f1d27'; ctx.fillRect(x, y, an, 30);
+      ctx.fillStyle = 'rgba(255,255,255,.025)'; ctx.fillRect(x, y, an, 30);
       ctx.restore();
       ctx.beginPath(); ctx.moveTo(x, y+30); ctx.lineTo(x+an, y+30);
-      ctx.strokeStyle = '#2b2833'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,.06)'; ctx.lineWidth = 1; ctx.stroke();
+
+      /* El punto dice cómo está el repo de un vistazo: el estado más urgente de sus
+         sesiones (trabajando antes que te espera, y eso antes que cerrada). */
+      const deZona = listaL.filter(l => l.repo === z.nombre);
+      const estadoZona = ['working', 'agents', 'waiting', 'closed'].find(e => deZona.some(l => l.estado === e)) || 'closed';
+      const colZona = COL[estadoZona] || '#5A5766';
+      ctx.save();
+      ctx.shadowColor = colZona; ctx.shadowBlur = 9;
+      ctx.beginPath(); ctx.arc(x + 16, y + 15, 3.5, 0, 6.29); ctx.fillStyle = colZona; ctx.fill();
+      ctx.restore();
 
       // el semáforo que el propio proyecto se puso en su _state.md
       const doc = listaL.find(l => l.repo === z.nombre && l.doc)?.doc;
-      let tx = x + 13;
+      let tx = x + 27;
       if (doc?.semaforo){
         ctx.font = '11px ui-sans-serif,system-ui'; ctx.textAlign = 'left';
         ctx.fillText(doc.semaforo, tx, y+19);
         tx += 17;
       }
-      ctx.fillStyle = '#8b8797'; ctx.font = '700 11.5px ui-sans-serif,system-ui'; ctx.textAlign = 'left';
+      ctx.fillStyle = '#94A3B8'; ctx.font = '700 11.5px ui-sans-serif,system-ui'; ctx.textAlign = 'left';
       ctx.fillText(z.nombre, tx, y+19);
       // una sesión cerrada NO es una sesión abierta: contarlas juntas hacía
       // creer que había dos del CRM cuando una llevaba 24 min muerta
@@ -706,8 +726,12 @@ const Pulpos = (() => {
       const z = L.zona;
       const sitio = z ? (z.cy + z.ry) - (L.y + L.r) : 999;
       const dosLineas = sitio > 44;
-      // el nombre que le puso Claude Code se lee mejor que ocho hexadecimales
-      const idTxt = (L.nombre || L.id.slice(0,8)) + (L.equipo ? ' · equipo' : '');
+      // el nombre que le pusiste tú manda; si no, el de Claude Code, que se lee mejor que
+      // ocho hexadecimales
+      // en el replay la cabeza se crea sin alias: de ahí el `|| ''`
+      const suyo = L.alias || '';
+      const alias = suyo.length > 30 ? suyo.slice(0, 29) + '…' : suyo;
+      const idTxt = (alias || L.nombre || L.id.slice(0,8)) + (L.equipo ? ' · equipo' : '');
       ctx.font = '700 10px ui-monospace,monospace';
       const w1 = ctx.measureText(est).width;
       ctx.font = '9px ui-monospace,monospace';
@@ -837,8 +861,10 @@ const Pulpos = (() => {
       ficha.style.opacity = 1;
       ficha.style.left = Math.min(W-300, mx+16) + 'px';
       ficha.style.top = Math.max(6, my-10) + 'px';
+      // el alias lo escribe una persona y va a innerHTML: se escapa
+      const alias = String(hover.alias || '').replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
       ficha.innerHTML = hover.esLead
-        ? `<b>${hover.repo}</b><br>
+        ? `<b>${alias ? alias + ' · ' : ''}${hover.repo}</b><br>
            ${hover.doc ? `<span style="color:var(--txt-2)">${hover.doc.semaforo} ${hover.doc.texto}</span><br>` : ''}
            ${hover.colgando ? `<span class="l">tareas sin cerrar</span> <span style="color:#c084fc">${hover.colgando}</span><br>` : ''}
            <span class="l">sesión</span> ${hover.id.slice(0,8)} · ${hover.rama || 'sin rama'}${hover.equipo ? ' · equipo' : ''}<br>

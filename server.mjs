@@ -14,6 +14,17 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { execFile, execFileSync, spawn } from 'node:child_process';
+/* El historial de sesiones y sus nombres; escribe solo en ~/.local/state/warroom/.
+ *
+ * IMPACT-OK: cambio aditivo, mapeado a mano (el grafo no indexa este repo). `server.mjs` no
+ * lo importa nadie: lo arrancan `package.json`, `warroom.service.in`, `windows/arrancar.cmd`
+ * y `capturas.mjs` (en modo demo). Hacia fuera, `/api/state` y `/api/stream` ganan dos campos
+ * por sesión (`alias`, `reanudar`) y no pierden ni renombran ninguno: quien ya lo lea desde
+ * fuera sigue encontrando `nombre`, `project`, `status` y compañía igual. Las
+ * rutas `/api/historial` y `/api/nombre` son nuevas. Sin producción implicada: panel local. */
+import * as historial from './historial.mjs';
+// consumo de tokens por día y por sesión; escribe solo ~/.local/state/warroom/tokens.json
+import * as consumo from './consumo.mjs';
 
 /*
  * Node 20.11 como mínimo, y el número importa: `import.meta.dirname` (que usa la línea de
@@ -1079,6 +1090,10 @@ async function scan() {
   // sesiones que se salieron de la ventana: fuera de memoria
   for (const id of [...sessions.keys()]) if (!seen.has(id)) sessions.delete(id);
 
+  // lo que está abierto ahora es lo que habrá que reabrir si el equipo se apaga
+  historial.anotarAbiertas([...sessions.values()]
+    .filter((s) => s.status !== 'closed').map((s) => s.id));
+
   // con todos los transcritos ya leídos, cerrar las identidades que el CLI no puede dar
   emparejarPorMsgId();
 }
@@ -1672,6 +1687,8 @@ function snapshot() {
     })
     .map((s) => ({
       id: s.id, nombre: s.nombre || '', project: s.project, cwd: s.cwd, branch: s.branch,
+      // `nombre` es la dirección que da Claude para escribirle; `alias`, el que le pones tú
+      alias: historial.nombreDe(s.id), reanudar: historial.comando(s.id, s.cwd),
       status: s.status, idle: Math.round(s.idle || 0),
       idleLider: Math.round(s.idleLider || 0),
       acts: s.acts, up: s.up, lat: s.lat, toks: s.toks,
@@ -1711,6 +1728,32 @@ function snapshot() {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
                '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
 const clients = new Set();
+
+/** Sin Origin (curl, un hook) se acepta: quien lo manda ya está en este equipo. */
+function origenPropio(origin) {
+  if (!origin) return true;
+  try {
+    const u = new URL(origin);
+    return ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname) && Number(u.port) === PORT;
+  } catch { return false; }
+}
+
+/* Pasado el tope se deja de guardar pero se sigue leyendo hasta el final: cortar la
+   conexión a mitad deja al cliente sin respuesta y sin saber por qué. */
+function leerCuerpo(req, tope) {
+  return new Promise((ok, mal) => {
+    const trozos = [];
+    let n = 0;
+    req.on('data', (c) => {
+      n += c.length;
+      if (n <= tope) trozos.push(c);
+    });
+    req.on('end', () => (n > tope
+      ? mal(new Error('cuerpo demasiado grande'))
+      : ok(Buffer.concat(trozos).toString('utf8'))));
+    req.on('error', mal);
+  });
+}
 
 const server = http.createServer(async (req, res) => {
   /* Escuchar en 127.0.0.1 no basta por sí solo. Con *DNS rebinding* una web
@@ -1771,6 +1814,74 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/api/state') {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     return res.end(JSON.stringify(snapshot(), null, 2));
+  }
+  /* Todas las sesiones en disco, con su comando para reanudarlas. En demostración no se
+     enseña nada: el modo demo existe para sacar capturas sin nombres reales. */
+  if (url.pathname === '/api/historial') {
+    const datos = demo
+      ? { ahora: now(), limpiezaDias: 30, total: 0, ocultas: 0, apagado: null, sesiones: [], demo: true }
+      : await historial.listar((id) => sessions.get(id)?.status || null);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify(datos));
+  }
+  /* Retomar una sesión: lo último que se dijo, su borrador de cierre, sus tareas sin
+     cerrar, cómo está su repo AHORA y lo que lleva consumido. Bajo demanda: solo se pide
+     al desplegar una fila, no para las ciento y pico del historial. */
+  if (url.pathname === '/api/sesion') {
+    const id = url.searchParams.get('id') || '';
+    const d = demo ? null : await historial.detalle(id, (x) => sessions.get(x)?.status || null);
+    if (d) {
+      const tareas = await loadTasks(id);
+      d.tareas = tareas.filter((t) => t.status !== 'completed');
+      d.tareasTotal = tareas.length;
+      // como con el borrador: una sesión abierta en el contenedor tiene su repo en `main/`
+      d.git = d.cwd ? (await estadoGit(d.cwd)) || (await estadoGit(path.join(d.cwd, 'main'))) : null;
+      d.tokens = consumo.deSesion(id);
+    }
+    res.writeHead(d ? 200 : 404, { 'Content-Type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify(d || { error: 'no encuentro esa sesión' }));
+  }
+  if (url.pathname === '/api/buscar') {
+    const datos = demo
+      ? { q: '', sesiones: [], demo: true }
+      : await historial.buscar(url.searchParams.get('q'), (x) => sessions.get(x)?.status || null);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify(datos));
+  }
+  if (url.pathname === '/api/consumo') {
+    const n = [7, 30, 90].includes(Number(url.searchParams.get('dias'))) ? Number(url.searchParams.get('dias')) : 7;
+    const datos = demo ? { demo: true, dias: n, porDia: [], sesiones: [], carpetas: [], modelos: [], totales: [0, 0, 0, 0] }
+      : await consumo.resumen(n, historial.ficha);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify(datos));
+  }
+  /* Poner nombre es el único cambio que se puede hacer desde el panel, y solo toca su
+     propio fichero. Aun así va blindado contra que lo dispare otra web: POST, JSON (que
+     obliga al navegador a preguntar antes y aquí nadie le contesta que sí) y, si la
+     petición trae Origin, que sea este mismo panel. */
+  if (url.pathname === '/api/nombre') {
+    const json = { 'Content-Type': 'application/json; charset=utf-8' };
+    if (req.method !== 'POST') {
+      res.writeHead(405, { ...json, Allow: 'POST' });
+      return res.end(JSON.stringify({ ok: false, error: 'para poner un nombre, POST' }));
+    }
+    if (!origenPropio(req.headers.origin)) {
+      res.writeHead(403, json);
+      return res.end(JSON.stringify({ ok: false, error: 'solo desde el propio panel' }));
+    }
+    if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) {
+      res.writeHead(415, json);
+      return res.end(JSON.stringify({ ok: false, error: 'el cuerpo va en JSON' }));
+    }
+    let d;
+    try { d = JSON.parse(await leerCuerpo(req, 4096)); }
+    catch {
+      res.writeHead(400, json);
+      return res.end(JSON.stringify({ ok: false, error: 'cuerpo ilegible o demasiado grande' }));
+    }
+    const r = historial.ponerNombre(d?.id, d?.nombre);
+    res.writeHead(r.ok ? 200 : 400, json);
+    return res.end(JSON.stringify(r));
   }
   if (url.pathname === '/api/grafo') {
     const datos = await leerGrafo();
@@ -1843,7 +1954,18 @@ async function tick() {
   finally { scanning = false; }
 }
 
+/* Al apagar el equipo, systemd manda SIGTERM: último volcado de qué había abierto, para
+   que tras el arranque se sepa qué tenías delante. Sin esto se perdería como mucho el
+   último minuto, que es justo el que importa. En demo no se escribe nada. */
+for (const senal of ['SIGTERM', 'SIGINT']) {
+  process.on(senal, () => {
+    if (!demo) historial.volcar();
+    process.exit(0);
+  });
+}
+
 setInterval(tick, SCAN_MS);
+if (!demo) consumo.iniciar();
 setInterval(() => {
   if (!clients.size) return;
   const payload = `data: ${JSON.stringify(snapshot())}\n\n`;

@@ -8,6 +8,17 @@ const THINKING = 150;
 let state = { sessions: [], now: 0 };
 let openId = null;       // sesión abierta en detalle
 let verCerradas = false; // el cajón de las que ya no están
+/* El nombre que le pones a una sesión (`alias`) y su comando para reanudarla
+   (`reanudar`) llegan en el snapshot. La ficha se repinta cada segundo, así que mientras
+   escribes el nombre no se toca, y el "copiado" se recuerda aquí para que el siguiente
+   repintado no lo borre al instante.
+
+   IMPACT-OK: cambios aditivos. Mapeado a mano: `app.js` lo carga `index.html` y nadie lo
+   importa. Usa de `historial.js` (cargado antes) `Historial.copiar` y `Historial.editor`, y
+   del snapshot dos campos nuevos; los que ya leía no cambian. Sin producción implicada. */
+let editandoNombre = null;
+let copiado = { id: null, hasta: 0, ok: false };
+let errorNombre = { id: null, hasta: 0, texto: '' };
 
 /* Vistas del grafo acotadas al proyecto de la sesión abierta. Null en la vista de flota,
    donde lo que toca es el ecosistema entero. Antes del 2026-08-06 los tres paneles de
@@ -97,15 +108,17 @@ function render() {
   const entreSesiones = (state.enlaces || []).reduce((n, e) => n + e.n, 0);
   const olvidada = s.filter((x) => x.status === 'waiting').sort((a, b) => b.idle - a.idle)[0];
 
+  // cada KPI va teñido por lo que cuenta (la capa de relieve de index.html), y a cero se apaga
+  const tinte = (n, clase) => (n ? clase : 'cero');
   $('kpis').innerHTML = `
-    ${state.aviso ? `<div class="kpi warn" title="${state.aviso}"><span class="lab">Ojo</span><span class="val" style="font-size:13px">${state.avisoCorto || 'detección parcial'}</span></div>` : ''}
-    <div class="kpi"><span class="lab">Trabajando</span><span class="val">${working}</span></div>
-    ${conAgentes ? `<div class="kpi"><span class="lab">Agentes al lío</span><span class="val" style="color:var(--accent-soft)">${conAgentes}</span></div>` : ''}
-    <div class="kpi warn"><span class="lab">Te esperan</span><span class="val">${waiting}</span></div>
-    <div class="kpi"><span class="lab">Agentes vivos</span><span class="val">${agents}</span></div>
-    <div class="kpi ${lat ? 'hot' : ''}"><span class="lab">Laterales</span><span class="val tnum">${lat}</span></div>
-    ${entreSesiones ? `<div class="kpi"><span class="lab">Entre sesiones</span><span class="val tnum" style="color:#22d3ee">${entreSesiones}</span></div>` : ''}
-    ${olvidada ? `<div class="kpi warn"><span class="lab">Más olvidada</span><span class="val" style="font-size:13px">${olvidada.project.slice(0, 16)} · ${ago(olvidada.idle)}</span></div>` : ''}`;
+    ${state.aviso ? `<div class="kpi warn" title="${esc(state.aviso)}"><span class="lab">Ojo</span><span class="val" style="font-size:13px">${esc(state.avisoCorto || 'detección parcial')}</span></div>` : ''}
+    <div class="kpi ${tinte(working, 'ok')}"><span class="lab">Trabajando</span><span class="val">${working}</span></div>
+    ${conAgentes ? `<div class="kpi acc"><span class="lab">Agentes al lío</span><span class="val">${conAgentes}</span></div>` : ''}
+    <div class="kpi ${tinte(waiting, 'warn')}"><span class="lab">Te esperan</span><span class="val">${waiting}</span></div>
+    <div class="kpi ${tinte(agents, 'acc')}"><span class="lab">Agentes vivos</span><span class="val">${agents}</span></div>
+    <div class="kpi ${tinte(lat, 'hot')}"><span class="lab">Laterales</span><span class="val tnum">${lat}</span></div>
+    ${entreSesiones ? `<div class="kpi x"><span class="lab">Entre sesiones</span><span class="val tnum">${entreSesiones}</span></div>` : ''}
+    ${olvidada ? `<div class="kpi warn"><span class="lab">Más olvidada</span><span class="val" style="font-size:13px">${esc((olvidada.alias || olvidada.project).slice(0, 16))} · ${ago(olvidada.idle)}</span></div>` : ''}`;
 
   pintarFavicon(waiting ? ICONO.espera
     : (working || conAgentes) ? ICONO.activa
@@ -191,7 +204,7 @@ function pintarCerradas(list) {
     .map((s) => `
       <div class="task" data-cerrada="${s.id}" style="cursor:pointer">
         <span class="id mono">✕</span>
-        <span class="s"><b style="color:var(--txt)">${s.project}</b>
+        <span class="s"><b style="color:var(--txt)">${s.alias ? esc(s.alias) + ' · ' : ''}${s.project}</b>
           · cerró hace ${ago(state.now - s.lastActivity)}
           · ${num(s.acts)} acciones · ${num(s.toks)} tokens
           ${s.agents.length ? ` · ${s.agents.length} agentes` : ''}</span>
@@ -219,7 +232,7 @@ function renderDetail(s) {
     $('mapaPanel').classList.add('enfocado');
     setTimeout(() => Pulpos.medir(), 330);
   }
-  $('dtitle').innerHTML = `${s.project} <span class="note">${s.cwd} · ${ESTADO[s.status]}${s.status === 'waiting' ? ' desde hace ' + ago(s.idle) : ''}</span>`;
+  $('dtitle').innerHTML = `${s.alias ? esc(s.alias) + ' · ' : ''}${s.project} <span class="note">${s.cwd} · ${ESTADO[s.status]}${s.status === 'waiting' ? ' desde hace ' + ago(s.idle) : ''}</span>`;
 
   /* Los paneles de abajo pasan a hablar de ESTE proyecto. Se piden una sola vez por
      sesión abierta (el servidor además cachea 60 s), no en cada repintado: `renderDetail`
@@ -249,7 +262,16 @@ function renderDetail(s) {
 
   // la ficha que antes vivía en la tarjeta del mapa. El nombre va delante y con formato
   // de dirección: es lo que hay que escribir para mandarle un mensaje a esta sesión
-  $('fichaSes').innerHTML = `
+  const yaCopiado = copiado.id === s.id && Date.now() < copiado.hasta;
+  if (editandoNombre !== s.id) $('fichaSes').innerHTML = `
+    <div class="alias-fila">
+      <span data-nombre>${s.alias ? `<span class="alias">${esc(s.alias)}</span>` : '<span class="sin">sin nombre</span>'}</span>
+      <button type="button" class="mini" data-accion="renombrar">✎ ${s.alias ? 'cambiar nombre' : 'ponerle nombre'}</button>
+      ${s.reanudar ? `<button type="button" class="mini${yaCopiado ? (copiado.ok ? ' ok' : '') : ' cta'}" data-accion="reanudar"
+        title="${esc(s.reanudar)}">${yaCopiado ? (copiado.ok ? 'copiado ✓' : 'no se pudo copiar') : '⧉ comando para reanudar'}</button>` : ''}
+      ${errorNombre.id === s.id && Date.now() < errorNombre.hasta
+        ? `<span class="note" style="color:var(--err)">no se guardó el nombre: ${esc(errorNombre.texto)}</span>` : ''}
+    </div>
     <div class="cmeta">
       ${s.nombre ? `<span class="dir" title="dirección de esta sesión: con este nombre se le escribe desde otra">${esc(s.nombre)}</span>` : ''}
       <span>${s.branch || 'sin rama'}</span><span>${s.id.slice(0, 8)}</span>
@@ -360,6 +382,30 @@ function renderDetail(s) {
 
 Pulpos.init($('mapa'), $('ficha'), {
   alClicarLider: (id) => { openId = id; Pulpos.enfocar(id); render(); },
+});
+
+/* Nombre y comando de la sesión abierta. Un solo oyente para la ficha entera, porque su
+   contenido se rehace en cada repintado y un oyente por botón se perdería con él. */
+$('fichaSes').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-accion]');
+  const s = openId && state.sessions.find((x) => x.id === openId);
+  if (!b || !s) return;
+  if (b.dataset.accion === 'reanudar') {
+    const ok = await Historial.copiar(s.reanudar);
+    copiado = { id: s.id, hasta: Date.now() + 1600, ok };
+    render();
+    return;
+  }
+  if (b.dataset.accion === 'renombrar') {
+    editandoNombre = s.id;
+    Historial.editor($('fichaSes').querySelector('[data-nombre]'), s.id, s.alias, (r) => {
+      editandoNombre = null;
+      // se enseña ya: el servidor lo confirmará en el siguiente latido del stream
+      if (r?.ok) s.alias = r.nombre;
+      else if (r) errorNombre = { id: s.id, hasta: Date.now() + 6000, texto: r.error || 'error desconocido' };
+      render();
+    });
+  }
 });
 $('b-soltar').addEventListener('click', () => Pulpos.soltarTodos());
 $('b-plegar').addEventListener('click', (e) => {

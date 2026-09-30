@@ -47,7 +47,7 @@ En resumen:
 |---|---|
 | Lee | `~/.claude/projects`, `tasks` y `teams` |
 | Ejecuta | Cuatro comandos git de solo lectura sobre tus repos: `rev-parse`, `status --porcelain`, `rev-list --count` y `log -1` |
-| Escribe | Un fichero con los avisos ya emitidos, en `~/.local/state/warroom/`. Nada más |
+| Escribe | Cinco JSON pequeños en `~/.local/state/warroom/`: los avisos ya emitidos, los nombres que pones a las sesiones, el índice del [historial](#el-historial), cuáles había abiertas y el [consumo](#el-consumo) por día. Nada más |
 | Manda por la red | Nada, salvo que enciendas los [avisos](docs/ALERTAS.md), y entonces a **tu** endpoint |
 | Nunca toca | Tu código, tus commits, ni nada dentro de `~/.claude` |
 
@@ -252,6 +252,78 @@ desde otra ventana.
 
 Estos mensajes no cuentan como `laterales` ni como "al líder". Son de otra
 naturaleza y tienen su propio contador.
+
+---
+
+## El historial
+
+El mapa enseña lo que está abierto ahora. El botón **🕘 historial** enseña todo lo que
+sigue en disco, de la sesión más reciente a la más vieja, agrupado por día y con buscador
+(por nombre, proyecto, rama o la primera frase que le dijiste).
+
+Cada fila trae un botón que copia el comando para volver a entrar:
+
+```bash
+cd '/ruta/del/proyecto' && claude --resume <id> --name 'el nombre que le pusiste'
+```
+
+El `cd` va delante porque Claude guarda cada sesión bajo el directorio donde se abrió, así
+que el comando funciona pegado en cualquier terminal.
+
+**Nombres.** Con ✎ (en la fila o en el detalle de la sesión) le pones un nombre, que sale
+también en el mapa. Se guarda en `~/.local/state/warroom/nombres.json`, no en `~/.claude`. Lo
+que sí llega a Claude es el `--name` del comando: al reanudar, **es el propio Claude quien
+guarda ese nombre** en la sesión, y desde ahí sale en su selector de `/resume` y en el título
+de la terminal. Si ya le habías puesto uno con `/rename`, el historial también lo lee.
+
+**Lo que tenías abierto al apagar.** El panel apunta cuándo vio abierta cada sesión por última
+vez y lo compara con la hora de arranque del equipo. Tras un reinicio, el historial se abre
+solo con esas sesiones arriba del todo, hasta que las reabres o lo cierras a mano.
+
+**Lo que no enseña.** Las sesiones que no abriste tú (las que lanza un programa con el SDK,
+entrypoint `sdk-*`) y las vacías. No desaparecen en silencio: la cabecera dice cuántas quedan
+fuera.
+
+**Retomar.** Al desplegar una fila sale lo necesario para volver sin releer la sesión: lo
+último que le pediste, lo último que te contestó, sus tareas sin cerrar, cómo está su repo
+ahora (ficheros sin commitear, commits sin subir), lo que lleva consumido y, si el hook de
+bitácora dejó un borrador al cerrarla, ese borrador. Se pide al desplegar, no para toda la
+lista.
+
+**Buscar dentro.** Escribir en el buscador filtra al momento por nombre, título, carpeta y
+rama. Con Enter (o el botón) busca además dentro de lo que dijisteis tú y Claude en todas las
+sesiones, sin tildes ni mayúsculas y con las palabras en cualquier orden dentro del mismo
+mensaje. Las salidas de herramientas y de hooks no cuentan: el mismo texto sale en todas las
+sesiones. Lee los transcripts como bytes y solo descodifica la línea que coincide, que es
+lo que la deja en unos 3 s para 1,9 GB.
+
+**Ojo con la limpieza de Claude.** Claude borra los transcripts pasados
+`cleanupPeriodDays` días (30 si no lo cambias en `~/.claude/settings.json`). El historial
+conserva la fila y el nombre, pero una sesión cuyo transcript ya no existe no se puede
+reanudar: sale tachada, y una semana antes el panel avisa de cuánto le queda.
+
+---
+
+## El consumo
+
+El botón **📊 consumo** enseña los tokens de los últimos 7, 30 o 90 días: por día, las
+sesiones que más han gastado (pulsa una y se abre en el historial), por carpeta y por modelo.
+
+Cuenta las cuatro partes que Claude apunta en cada respuesta, y las separa porque no pesan
+igual:
+
+| | Qué es |
+|---|---|
+| **Nuevos** | entrada + caché escrita + salida: lo que entra por primera vez y lo que escribe Claude |
+| **Salida** | solo lo que escribe Claude |
+| **Caché escrita** | contexto nuevo que se guarda para los turnos siguientes |
+| **Releídos de caché** | el contexto que se vuelve a mandar en cada turno. Suele ser decenas de veces lo nuevo, y por eso va aparte y no en las barras: en el mismo eje las aplastaría |
+
+Una respuesta ocupa varias líneas del transcript con el mismo `usage`, así que se cuenta por
+`message.id` y no por línea. Los agentes de una sesión cuentan como consumo de esa sesión. La
+primera vez lee todos los transcripts (unos segundos); después, solo lo nuevo, con un cursor
+por fichero guardado en `~/.local/state/warroom/tokens.json`. La carpeta es la de donde se
+abrió la sesión, no la de lo que se tocó.
 
 ---
 
