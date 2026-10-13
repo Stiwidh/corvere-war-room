@@ -1863,6 +1863,22 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8', Allow: 'POST' });
         return res.end('para cambiar el estado de los avisos, POST');
       }
+      /* IMPACT-OK: blindaje del interruptor, calcado de /api/nombre de más abajo. Un POST
+         simple (sin cabeceras especiales) no dispara el preflight de CORS, así que antes
+         cualquier web podía mover este interruptor en silencio: pasaba el filtro de Host
+         (va a 127.0.0.1) y el método. Exigir content-type application/json obliga al
+         navegador a pedir permiso antes de enviar (preflight, que aquí nadie contesta), y
+         si trae Origin tiene que ser este panel. Sin Origin (curl, hooks) sigue valiendo:
+         quien lo lanza ya está en este equipo. Verificado el 2026-10-13: POST con Origin
+         ajeno 415 sin content-type y 403 con él; curl local sin Origin 200. */
+      if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) {
+        res.writeHead(415, { 'Content-Type': 'application/json; charset=utf-8', Allow: 'POST' });
+        return res.end(JSON.stringify({ ok: false, error: 'el cuerpo va en JSON' }));
+      }
+      if (!origenPropio(req.headers.origin)) {
+        res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ ok: false, error: 'solo desde este equipo' }));
+      }
       ALERTAS_ON = url.searchParams.get('on') === '1';
     }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
