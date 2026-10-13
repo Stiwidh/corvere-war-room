@@ -101,6 +101,42 @@ const ALERTAS_TTL_MIN = 10;
 const ALERTAS_ESTADO = process.env.WARROOM_PROD_ESTADO || null;
 let refrescandoAlertas = false;
 
+/* Cómo acabó el refresco de alertas: la última vez que fue bien y la última que falló.
+ *
+ * IMPACT-OK: estado nuevo y aditivo. Lo escriben los handlers `exit` y `error` del hijo de
+ * `refrescarAlertasSiTocan` (único llamador: `leerGrafo`, que no cambia de contrato) y lo
+ * lee `/api/alertas`, que gana dos campos (`refresco_ok`, `refresco_fallo`, segundos epoch
+ * o null) sin renombrar ni quitar ninguno; en `public/` nadie consume esa ruta todavía.
+ * Fuera del repo y de ~/.claude, como `tokens.json` y `nombres.json`: temporal + rename y
+ * permisos 600. Se carga al arrancar para que un reinicio no olvide el último fallo.
+ * Sin producción implicada: panel local de solo lectura; la consulta que hace el hijo es
+ * la misma de antes, esto solo apunta cómo acaba.
+ *
+ * El fallo: el hijo iba con stdio ignore y nadie miraba su código de salida. Si fallaba,
+ * las alertas envejecían en silencio para siempre, que es justo el bug que motivó el TTL
+ * de 10 minutos, pero ahora sin forma de verlo. */
+const F_REFRESCO = path.join(HOME, '.local', 'state', 'warroom', 'refresco-alertas.json');
+const refresco = (() => {
+  try {
+    const g = JSON.parse(fs.readFileSync(F_REFRESCO, 'utf8'));
+    return { ok: Number(g.ok) || null, fallo: Number(g.fallo) || null, motivo: String(g.motivo || '') };
+  } catch {
+    return { ok: null, fallo: null, motivo: '' };
+  }
+})();
+
+function anotarRefresco(bien, motivo) {
+  const t = Math.round(Date.now() / 1000);
+  if (bien) refresco.ok = t;
+  else { refresco.fallo = t; refresco.motivo = motivo; }
+  try {
+    fs.mkdirSync(path.dirname(F_REFRESCO), { recursive: true });
+    const tmp = `${F_REFRESCO}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(refresco), { mode: 0o600 });
+    fs.renameSync(tmp, F_REFRESCO);
+  } catch { /* sin disco: el dato sigue en memoria y en /api/alertas */ }
+}
+
 async function refrescarAlertasSiTocan() {
   // Un refresco a la vez: el panel recarga cada pocos segundos y sin esto lanzaría
   // un proceso por recarga mientras el anterior sigue vivo.
@@ -118,8 +154,18 @@ async function refrescarAlertasSiTocan() {
   refrescandoAlertas = true;
   const hijo = spawn('python3', [GRAFO_CLI, 'alertas', '--refrescar'],
     { stdio: 'ignore', detached: true });
-  hijo.on('exit', () => { refrescandoAlertas = false; });
-  hijo.on('error', () => { refrescandoAlertas = false; });
+  /* Si el hijo no llega a arrancar (python3 no está), Node emite `error` y después puede
+     emitir también `exit`: se apunta solo el primero, que es el que dice el motivo real.
+     IMPACT-OK: ver F_REFRESCO arriba. Sin producción implicada: panel local de solo lectura. */
+  let anotado = false;
+  const acabar = (bien, motivo) => {
+    refrescandoAlertas = false;
+    if (anotado) return;
+    anotado = true;
+    anotarRefresco(bien, motivo);
+  };
+  hijo.on('exit', (codigo, senal) => acabar(codigo === 0, senal ? `señal ${senal}` : `código ${codigo}`));
+  hijo.on('error', (e) => acabar(false, String(e?.code || e?.message || e)));
   hijo.unref();
 }
 
@@ -152,6 +198,21 @@ const GRAFO_DIR = path.dirname(GRAFO_JSON);
 const EXPLORADOR_HTML = path.join(GRAFO_DIR, 'explorador.html');
 const GRAFO_CLI = path.join(GRAFO_DIR, '..', 'graph.py');
 
+/* La regeneración del explorador que está en marcha, o null. Hace de candado, igual que
+ * `refrescandoAlertas`, y además se puede esperar.
+ *
+ * IMPACT-OK: guarda nueva dentro de `explorador()`, cuyo único llamador es la rama
+ * `/api/explorador` del router (consumidor: el botón de `public/app.js`). El contrato no
+ * cambia: sigue devolviendo el HTML o null. Por qué es seguro: la primera petición lanza
+ * el python como antes; las que llegan mientras corre esperan a ESA misma promesa en vez
+ * de lanzar otro. Devolverles null enseñaría "sin grafo" sin serlo, que es peor que
+ * esperar. El candado se suelta al acabar el hijo, vaya bien, mal o por timeout.
+ * Sin producción implicada: panel local de solo lectura.
+ *
+ * El fallo: sin guarda, un doble clic lanzaba dos `graph.py explorador` a la vez, y el
+ * segundo podía pisar el HTML que el primero estaba escribiendo. */
+let explorandoEnVuelo = null;
+
 async function explorador() {
   const mtime = async (p) => { try { return (await fsp.stat(p)).mtimeMs; } catch { return 0; } };
   const [dibujo, indice] = await Promise.all([
@@ -161,9 +222,12 @@ async function explorador() {
   if (!dibujo || dibujo < indice) {
     // Regenerar es del orden de segundos. Se hace sincrono a proposito: quien pulsa el
     // boton prefiere esperar a que salga bien antes que ver un dibujo de anteayer.
-    await new Promise((ok) => {
-      execFile('python3', [GRAFO_CLI, 'explorador'], { timeout: 60000 }, () => ok());
-    });
+    if (!explorandoEnVuelo) {
+      explorandoEnVuelo = new Promise((ok) => {
+        execFile('python3', [GRAFO_CLI, 'explorador'], { timeout: 60000 }, () => ok());
+      }).finally(() => { explorandoEnVuelo = null; });
+    }
+    await explorandoEnVuelo;
   }
   try {
     return await fsp.readFile(EXPLORADOR_HTML);
@@ -177,18 +241,36 @@ async function explorador() {
    cerrar el detalle de la misma sesión no debería relanzar Python cada vez. */
 const CACHE_PIEZAS = new Map();
 const PIEZAS_TTL = 60000;
+/* proyecto -> promesa del python que ya está calculando sus piezas.
+ *
+ * IMPACT-OK: deduplicación nueva dentro de `piezasDe()`, cuyo único llamador es la rama
+ * `/api/piezas` (consumidor: el detalle de sesión en `public/app.js`). El contrato no
+ * cambia: devuelve el texto de `graph.py piezas` o null, y la caché con TTL sigue igual.
+ * Por qué es seguro: las peticiones del mismo proyecto que fallan caché mientras hay un
+ * python en marcha esperan a ese y reciben su misma salida; la entrada se borra al acabar,
+ * así que el Map nunca guarda más que lo que está corriendo.
+ * Sin producción implicada: panel local de solo lectura.
+ *
+ * El fallo: la caché solo servía DESPUÉS de la primera respuesta. Abrir el detalle varias
+ * veces seguidas antes de que contestara lanzaba un python por petición. */
+const PIEZAS_EN_VUELO = new Map();
 
 async function piezasDe(proyecto) {
   if (!proyecto) return null;
   const hit = CACHE_PIEZAS.get(proyecto);
   if (hit && Date.now() - hit.t < PIEZAS_TTL) return hit.v;
-  const salida = await new Promise((ok) => {
+  const enVuelo = PIEZAS_EN_VUELO.get(proyecto);
+  if (enVuelo) return enVuelo;
+  const p = new Promise((ok) => {
     execFile('python3', [GRAFO_CLI, 'piezas', '--proyecto', proyecto, '--origen', 'warroom'],
       { timeout: 30000, maxBuffer: 32 * 1024 * 1024 },
       (err, stdout) => ok(err ? null : stdout));
-  });
-  if (salida) CACHE_PIEZAS.set(proyecto, { t: Date.now(), v: salida });
-  return salida;
+  }).then((salida) => {
+    if (salida) CACHE_PIEZAS.set(proyecto, { t: Date.now(), v: salida });
+    return salida;
+  }).finally(() => { PIEZAS_EN_VUELO.delete(proyecto); });
+  PIEZAS_EN_VUELO.set(proyecto, p);
+  return p;
 }
 
 const PORT = Number(process.env.WARROOM_PORT || 7777);
@@ -1023,8 +1105,12 @@ async function scan() {
 
   const ordered = [...best.entries()].sort((a, b) => b[1].mtime - a[1].mtime);
   const seen = new Set();
+  /* Rutas de transcript leídas en este barrido: lo que NO esté aquí sale de `heads`,
+     `missions` y `cursors` al final (ver la poda de abajo). */
+  const vivas = new Set();
 
   for (const [id, info] of ordered) {
+    vivas.add(info.file);
     const head = await readHead(info.file);
     if (!head) continue;
     seen.add(id);
@@ -1035,14 +1121,15 @@ async function scan() {
 
     // subagentes
     let mtimeAgentes = 0;
+    const subDir = path.join(info.dir, 'subagents');
     try {
-      const subDir = path.join(info.dir, 'subagents');
       for (const f of await fsp.readdir(subDir)) {
         if (!f.endsWith('.jsonl')) continue;
         const stem = f.slice(0, -6);
         const m = AGENT_FILE.exec(stem);
         const name = m ? m[1] : stem.replace(/^agent-/, '').slice(0, 10);
         const sf = path.join(subDir, f);
+        vivas.add(sf);
         let st;
         try { st = fs.statSync(sf); } catch { continue; }
         mtimeAgentes = Math.max(mtimeAgentes, st.mtimeMs / 1000);
@@ -1055,7 +1142,14 @@ async function scan() {
           }
         }
       }
-    } catch { /* sesión sin subagentes */ }
+    } catch (e) {
+      /* Sin subagentes es ENOENT. Cualquier otro fallo es "no he podido mirar", no "ya no
+         hay": sus cursores se conservan, porque podarlos con la sesión aún en memoria haría
+         releer la cola en el siguiente barrido y contar dos veces lo ya contado. */
+      if (e?.code !== 'ENOENT') {
+        for (const k of cursors.keys()) if (k.startsWith(subDir + path.sep)) vivas.add(k);
+      }
+    }
 
     /* Estado. Mirar solo el transcript del líder mentía: cuando despliega
        agentes se queda bloqueado esperándolos y no escribe (medido: hasta 22
@@ -1113,6 +1207,29 @@ async function scan() {
 
   // sesiones que se salieron de la ventana: fuera de memoria
   for (const id of [...sessions.keys()]) if (!seen.has(id)) sessions.delete(id);
+
+  /* Y lo mismo con lo que se guarda por RUTA de fichero.
+   *
+   * IMPACT-OK: poda al final de `scan()`, mapeada a mano (el grafo no indexa este repo).
+   * `heads`, `missions` y `cursors` son cachés privadas de este fichero: las escriben
+   * `readHead`, `readMission` y `readNew`, y las leen esas mismas tres funciones (más
+   * `construirReplay` y `mapaDelDia` vía `readHead`). Nadie importa `server.mjs` y ningún
+   * campo de la API sale de ellas. Por qué es seguro: borrar una entrada solo obliga a
+   * volver a calcularla. Una cabecera o una misión se releen del disco (16 y 8 KB); un
+   * cursor perdido hace que el fichero, si reaparece, se lea desde la cola, que es lo
+   * mismo que con cualquier fichero recién descubierto. Las rutas fuera de la ventana de
+   * MAX_AGE_H también se podan: su sesión ya salió de `sessions` en la línea de arriba, así
+   * que conservar su cursor solo servía para que, al volver, empezara en blanco y sin la
+   * cola. Las cabeceras que piden el mapa del día y el replay para ficheros fuera de la
+   * ventana caen en el siguiente barrido y se releen cuando vuelvan a pedirse.
+   * `porPid` y `porNombre` NO se tocan: crecen a propósito (ver su cabecera).
+   * Sin producción implicada: panel local de solo lectura.
+   *
+   * El fallo: las tres crecían con cada transcript que moría (Claude los borra a los 30
+   * días) y nunca soltaban nada. El servicio iba por 465 MB residentes. */
+  for (const mapa of [heads, missions, cursors]) {
+    for (const ruta of [...mapa.keys()]) if (!vivas.has(ruta)) mapa.delete(ruta);
+  }
 
   // lo que está abierto ahora es lo que habrá que reabrir si el equipo se apaga
   historial.anotarAbiertas([...sessions.values()]
@@ -1554,6 +1671,63 @@ let reglasCache = { t: 0, datos: null };
 const REGLAS_TTL = 15 * 60;
 const DIAS_REGLAS = 30;
 
+/*
+ * Las líneas de un fichero que contienen alguna marca, sin descodificar el resto.
+ *
+ * IMPACT-OK: función nueva con un único llamador, `medirReglas`, que sigue devolviendo
+ * exactamente el mismo objeto a `/api/reglas`. Es el patrón de `leerFichero` en
+ * `consumo.mjs`: trozos de 4 MB, la marca se busca en bytes con Buffer.indexOf y solo se
+ * convierte en texto la línea que la contiene. Por qué es seguro: las marcas son ASCII y
+ * un byte ASCII nunca aparece dentro de un carácter UTF-8 multibyte, así que buscar en
+ * bytes encuentra las mismas líneas que el `includes` sobre el texto. Una marca no lleva
+ * salto de línea, así que si empieza antes del último `\n` del trozo, acaba antes; la
+ * que cae después va en el resto que se arrastra al trozo siguiente, igual que la línea a
+ * medias. Una línea con varias marcas se descodifica una sola vez: tras procesarla se
+ * sigue buscando desde su final. La última línea sin `\n` se entrega también, como hacía
+ * el `split` (si está a medias, el JSON.parse del llamador la descarta como antes).
+ * Sin producción implicada: panel local de solo lectura.
+ */
+const TROZO_REGLAS = 4 * 1024 * 1024;
+const MARCAS_REGLAS = ['"Agent"', 'deploy-ef.sh', 'functions deploy'].map((m) => Buffer.from(m));
+
+async function lineasConMarca(file, marcas, onLinea) {
+  const fh = await fsp.open(file, 'r');
+  try {
+    let pos = 0;
+    let resto = Buffer.alloc(0);
+    for (;;) {
+      const buf = Buffer.alloc(TROZO_REGLAS);
+      const { bytesRead } = await fh.read(buf, 0, TROZO_REGLAS, pos);
+      if (!bytesRead) break;
+      pos += bytesRead;
+      const datos = resto.length ? Buffer.concat([resto, buf.subarray(0, bytesRead)]) : buf.subarray(0, bytesRead);
+      const fin = datos.lastIndexOf(10);
+      if (fin === -1) { resto = datos; continue; }
+      // la próxima aparición de cada marca; solo se vuelve a buscar la que quedó atrás
+      const prox = marcas.map((m) => datos.indexOf(m));
+      let desde = 0;
+      for (;;) {
+        let i = -1;
+        for (let k = 0; k < marcas.length; k++) {
+          if (prox[k] !== -1 && prox[k] < desde) prox[k] = datos.indexOf(marcas[k], desde);
+          if (prox[k] !== -1 && (i === -1 || prox[k] < i)) i = prox[k];
+        }
+        if (i === -1 || i > fin) break;
+        const ini = datos.lastIndexOf(10, i) + 1;
+        const fl = datos.indexOf(10, i);
+        onLinea(datos.toString('utf8', ini, fl));
+        desde = fl + 1;
+      }
+      resto = Buffer.from(datos.subarray(fin + 1));
+      // entre trozo y trozo se deja respirar al servidor: el panel sigue emitiendo
+      await new Promise((ok) => setImmediate(ok));
+    }
+    if (resto.length && marcas.some((m) => resto.includes(m))) onLinea(resto.toString('utf8'));
+  } finally {
+    await fh.close();
+  }
+}
+
 /**
  * Mide contra los transcripts si se trabaja como está decidido. No juzga
  * intenciones: cuenta llamadas. Una regla que se incumple una de cada cinco
@@ -1587,38 +1761,42 @@ async function medirReglas() {
       vistos.add(id);
       sesiones++;
 
-      let texto = '';
-      try { texto = await fsp.readFile(file, 'utf8'); } catch { continue; }
+      /* IMPACT-OK: cambia CÓMO se lee, no qué se cuenta. El filtro de marcas que antes era
+         un `includes` por línea lo hace ahora `lineasConMarca` en bytes, y cada línea que
+         lo pasa recibe el mismo JSON.parse y el mismo conteo de agentes, deploys y
+         councils. Sin producción implicada: panel local de solo lectura.
+
+         El fallo: esto hacía `readFile` ENTERO de cada transcript de 30 días y lo partía
+         por líneas cada 15 minutos. Era la única lectura no incremental del panel: cientos
+         de MB convertidos a texto de golpe para quedarse con unas pocas líneas. */
       const asientos = new Set();
-      for (const linea of texto.split('\n')) {
-        // filtro barato antes de parsear: el JSON.parse es lo caro
-        const hayAgente = linea.includes('"Agent"');
-        const hayDeploy = linea.includes('deploy-ef.sh') || linea.includes('functions deploy');
-        if (!hayAgente && !hayDeploy) continue;
-        let o;
-        try { o = JSON.parse(linea); } catch { continue; }
-        const c = o.message?.content;
-        if (!Array.isArray(c)) continue;
-        for (const b of c) {
-          if (!b || b.type !== 'tool_use') continue;
-          if (b.name === 'Agent') {
-            const t = b.input?.subagent_type || '(sin tipo)';
-            agentes.set(t, (agentes.get(t) || 0) + 1);
-            if (t.startsWith('council:')) asientos.add(t.replace('council:', ''));
-          }
-          if (b.name === 'Bash') {
-            const cmd = String(b.input?.command || '');
-            if (cmd.includes('deploy-ef.sh')) deployWrapper++;
-            else if (/(npx\s+)?supabase\s+functions\s+deploy/.test(cmd)) {
-              // §11 documenta el PAT canónico como vía legítima cuando el CLI
-              // por defecto no tiene scope. Contarlo como incumplimiento era
-              // acusar en falso: 135 de 136 eran esto.
-              if (cmd.includes('SUPABASE_ACCESS_TOKEN')) deployPat++;
-              else if (!/^\s*(echo|cat|grep|#)/.test(cmd)) deployDirecto++;
+      try {
+        await lineasConMarca(file, MARCAS_REGLAS, (linea) => {
+          let o;
+          try { o = JSON.parse(linea); } catch { return; }
+          const c = o.message?.content;
+          if (!Array.isArray(c)) return;
+          for (const b of c) {
+            if (!b || b.type !== 'tool_use') continue;
+            if (b.name === 'Agent') {
+              const t = b.input?.subagent_type || '(sin tipo)';
+              agentes.set(t, (agentes.get(t) || 0) + 1);
+              if (t.startsWith('council:')) asientos.add(t.replace('council:', ''));
+            }
+            if (b.name === 'Bash') {
+              const cmd = String(b.input?.command || '');
+              if (cmd.includes('deploy-ef.sh')) deployWrapper++;
+              else if (/(npx\s+)?supabase\s+functions\s+deploy/.test(cmd)) {
+                // §11 documenta el PAT canónico como vía legítima cuando el CLI
+                // por defecto no tiene scope. Contarlo como incumplimiento era
+                // acusar en falso: 135 de 136 eran esto.
+                if (cmd.includes('SUPABASE_ACCESS_TOKEN')) deployPat++;
+                else if (!/^\s*(echo|cat|grep|#)/.test(cmd)) deployDirecto++;
+              }
             }
           }
-        }
-      }
+        });
+      } catch { continue; }
       if (asientos.size) councils.push({ id: id.slice(0, 8), asientos: [...asientos] });
     }
   }
@@ -1889,6 +2067,9 @@ const server = http.createServer(async (req, res) => {
       umbrales: { olvidada_h: UMBRAL.olvidada / 3600, sinGuardar_h: UMBRAL.sinGuardar / 3600, atascado_min: UMBRAL.atascado / 60,
                   turnoLargo_min: UMBRAL.turnoLargo / 60, ausencia_min: UMBRAL.ausencia / 60 },
       tareaTerminada: AVISO_TERMINADA,
+      // IMPACT-OK: dos campos nuevos (ver F_REFRESCO). Sin producción implicada: panel local de solo lectura.
+      refresco_ok: refresco.ok,
+      refresco_fallo: refresco.fallo,
     }));
   }
   if (url.pathname === '/api/replay') {
