@@ -440,26 +440,50 @@ function detail(name, input) {
   }
 }
 
-/** Primeras líneas de un transcript: de ahí sale el cwd real de la sesión. */
+/*
+ * Primeras líneas de un transcript: de ahí sale el cwd real de la sesión.
+ *
+ * IMPACT-OK: mismo contrato ({ cwd, gitBranch } o null) para sus tres llamadores, `scan`,
+ * `construirReplay` y `mapaDelDia`. Solo cambia hasta dónde lee cuando en 16 KB no hay
+ * cwd. Sin producción implicada: panel local de solo lectura.
+ *
+ * El fallo: leía 16 KB fijos, y sin cwd ahí la sesión NO EXISTÍA para el panel (`scan`
+ * hace `continue`). La primera línea con cwd es a menudo el contexto que inyectan los
+ * hooks al arrancar, de ~14 KB, y desde que delante van también el título, el nombre y
+ * el modo, cruza los 16 KB. El 2026-10-15 había tres sesiones trabajando invisibles, y
+ * sus procesos se los quedaban dos sesiones de hacía un día, que salían "te espera".
+ * Medido sobre 274 transcripts: 6 pasan de 16 KB, la más lejana acaba en 99 KB.
+ */
+const HEAD_TOPES = [16 * 1024, 256 * 1024];
+/** ruta -> tamaño que ya se miró entero sin encontrar cwd: no se relee cada 3 s */
+const headsSin = new Map();
+
 async function readHead(file) {
   const cached = heads.get(file);
   if (cached) return cached;
   let fh;
   try {
     fh = await fsp.open(file, 'r');
-    const buf = Buffer.alloc(16 * 1024);
-    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
-    for (const line of buf.subarray(0, bytesRead).toString('utf8').split('\n')) {
-      if (!line.trim()) continue;
-      try {
-        const o = JSON.parse(line);
-        if (o.cwd) {
-          const head = { cwd: o.cwd, gitBranch: o.gitBranch || '' };
-          heads.set(file, head);
-          return head;
-        }
-      } catch { /* línea parcial, seguimos */ }
+    const { size } = await fh.stat();
+    if (headsSin.get(file) === size) return null;
+    for (const tope of HEAD_TOPES) {
+      const buf = Buffer.alloc(Math.min(tope, size));
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+      for (const line of buf.subarray(0, bytesRead).toString('utf8').split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const o = JSON.parse(line);
+          if (o.cwd) {
+            const head = { cwd: o.cwd, gitBranch: o.gitBranch || '' };
+            heads.set(file, head);
+            headsSin.delete(file);
+            return head;
+          }
+        } catch { /* línea cortada por el tope: la lee la pasada siguiente */ }
+      }
+      if (bytesRead >= size) break;
     }
+    headsSin.set(file, size);
   } catch { /* ilegible */ } finally { await fh?.close(); }
   return null;
 }
@@ -1331,7 +1355,7 @@ async function scan() {
    *
    * El fallo: las tres crecían con cada transcript que moría (Claude los borra a los 30
    * días) y nunca soltaban nada. El servicio iba por 465 MB residentes. */
-  for (const mapa of [heads, missions, cursors]) {
+  for (const mapa of [heads, headsSin, missions, cursors]) {
     for (const ruta of [...mapa.keys()]) if (!vivas.has(ruta)) mapa.delete(ruta);
   }
 
