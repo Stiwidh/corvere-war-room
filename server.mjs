@@ -750,7 +750,7 @@ async function appEscritorio() {
 
 /** Sesiones abiertas = procesos `claude` vivos. Su cwd dice a qué proyecto van. */
 async function liveCwds() {
-  const out = new Map();   // cwd -> nº de procesos
+  const out = new Map();   // cwd -> [pid]
   if (!HAY_PROC) return out;
   let pids;
   try { pids = await fsp.readdir('/proc'); } catch { return out; }
@@ -760,13 +760,45 @@ async function liveCwds() {
       const comm = (await fsp.readFile(`/proc/${pid}/comm`, 'utf8')).trim();
       if (comm !== 'claude') return;
       const cwd = await fsp.readlink(`/proc/${pid}/cwd`);
-      out.set(cwd, (out.get(cwd) || 0) + 1);
+      const lista = out.get(cwd);
+      if (lista) lista.push(Number(pid)); else out.set(cwd, [Number(pid)]);
       // segunda fuente del directorio: sin sessionId, pero dice a qué proyecto
       // le estás hablando cuando el CLI no está disponible
       apuntarPid(Number(pid), { cwd, vivo: true });
     } catch { /* murió mientras mirábamos */ }
   }));
   return out;
+}
+
+/**
+ * Reparte por carpeta los procesos de /proc que el CLI NO pone a nombre de nadie.
+ *
+ * /proc solo sabe de cwd, así que antes se repartían TODOS los procesos de una carpeta
+ * entre sus sesiones, de la más reciente a la más vieja, aunque el CLI ya dijera de quién
+ * era cada uno. Medido el 2026-10-15: una sesión archivada en la app ("Arreglar imports",
+ * fuera del CLI y sin proceso) seguía saliendo abierta porque se quedaba el proceso de
+ * otra sesión de la misma carpeta, y lo mismo una de PROTOCOLO_EVA con el de su vecina.
+ * En Linux el CLI sí lista las sesiones de la app con su pid (los 10 procesos vivos de
+ * ese día tenían dueño), así que lo suyo no se reparte; lo que quede es lo único que
+ * puede abrir a una sesión que el CLI no ve. Sin CLI no se descuenta nada: el reparto
+ * por carpeta de siempre.
+ *
+ * Devuelve `tomar(cwd)`: true si quedaba un proceso libre ahí, y lo gasta.
+ * IMPACT-OK: liveCwds y este reparto solo los consume scan(); cambia qué sesiones salen
+ * 'closed' en /api/state, que leen los hooks warroom_* (pulso, briefing, bitácora,
+ * collision_guardian) y el panel. Ninguno depende de que una sesión ajena salga abierta.
+ */
+function repartidorDeProcesos(live, cli) {
+  const conDueno = new Set();
+  if (cli) for (const a of cli.values()) if (a?.pid) conDueno.add(Number(a.pid));
+  const libres = new Map();   // cwd -> procesos sin dueño que quedan por dar
+  for (const [cwd, pids] of live) libres.set(cwd, pids.filter((p) => !conDueno.has(p)).length);
+  return (cwd) => {
+    const n = libres.get(cwd) || 0;
+    if (n < 1) return false;
+    libres.set(cwd, n - 1);
+    return true;
+  };
 }
 
 /**
@@ -1201,7 +1233,7 @@ async function scan() {
   // ninguna de estas dos puede tumbar el barrido: si fallan, se sigue sin ellas
   const cli = await sesionesDelCli().catch(() => null);   // Map sessionId -> info
   const appViva = await appEscritorio().catch(() => false);
-  const claimed = new Map();  // cwd -> cuántas sesiones ya marcamos abiertas
+  const tomarProceso = repartidorDeProcesos(live, cli);
 
   /* Con la app de escritorio viva SIEMPRE hay algo que advertir, haya o no otra
      fuente: el CLI no ve sus sesiones y devuelve una lista vacía, así que fiarse
@@ -1286,15 +1318,13 @@ async function scan() {
 
     /* Abierta si alguna fuente fiable la ve. El CLI da certeza por sessionId;
        /proc solo sabe de cwd, así que reparte: dos sesiones en el mismo
-       directorio y un único proceso significa que una de las dos ya no está. */
+       directorio y un único proceso significa que una de las dos ya no está.
+       Una sesión que el CLI ve no gasta proceso, y los que el CLI ya pone a nombre
+       de alguien no se reparten (ver repartidorDeProcesos). */
     const delCli = cli?.get(s.id) || null;
     if (delCli?.name) s.nombre = delCli.name;
 
-    const procsHere = live.get(s.cwd) || 0;
-    const used = claimed.get(s.cwd) || 0;
-    const porProceso = used < procsHere;
-    if (porProceso) claimed.set(s.cwd, used + 1);
-    const abierta = !!delCli || porProceso;
+    const abierta = !!delCli || tomarProceso(s.cwd);
 
     /* Y "cerrada" solo se puede AFIRMAR si teníamos forma de verlo.
        Donde hay /proc se afirma siempre: da certeza sobre las sesiones de
