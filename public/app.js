@@ -49,6 +49,13 @@ const ESTADO = {
   waiting: 'te espera',
   closed: 'cerrada',
 };
+/* IMPACT-OK: helper nuevo que solo lee el campo nuevo `bg` del snapshot (los procesos en
+   segundo plano de la sesión). `status` no cambia de valores: si lo que trabaja sin ti es
+   un proceso y no un agente, `agents` se rotula "en segundo plano" en vez de "agentes al
+   lío". Consumidores: los tres usos de este fichero. Sin producción implicada. */
+const estadoDe = (s) => (s.status === 'agents' && (s.bg || []).some((p) => p.pendiente)
+  && !s.agents.some((a) => !a.retired && state.now - a.last < WORKING)
+  ? 'en segundo plano' : ESTADO[s.status]);
 
 /* ── conexión ── */
 function connect() {
@@ -89,7 +96,8 @@ function pintarFavicon(color) {
 function render() {
   const s = state.sessions;
   const working = s.filter((x) => x.status === 'working').length;
-  const conAgentes = s.filter((x) => x.status === 'agents').length;
+  const enFondo = s.filter((x) => estadoDe(x) === 'en segundo plano').length;
+  const conAgentes = s.filter((x) => x.status === 'agents').length - enFondo;
   const waiting = s.filter((x) => x.status === 'waiting').length;
   const agents = s.reduce((n, x) => n + x.agents.filter((a) => !a.retired).length, 0);
   const lat = s.reduce((n, x) => n + x.lat, 0);
@@ -114,6 +122,7 @@ function render() {
     ${state.aviso ? `<div class="kpi warn" title="${esc(state.aviso)}"><span class="lab">Ojo</span><span class="val" style="font-size:13px">${esc(state.avisoCorto || 'detección parcial')}</span></div>` : ''}
     <div class="kpi ${tinte(working, 'ok')}"><span class="lab">Trabajando</span><span class="val">${working}</span></div>
     ${conAgentes ? `<div class="kpi acc"><span class="lab">Agentes al lío</span><span class="val">${conAgentes}</span></div>` : ''}
+    ${enFondo ? `<div class="kpi acc"><span class="lab">En segundo plano</span><span class="val">${enFondo}</span></div>` : ''}
     <div class="kpi ${tinte(waiting, 'warn')}"><span class="lab">Te esperan</span><span class="val">${waiting}</span></div>
     <div class="kpi ${tinte(agents, 'acc')}"><span class="lab">Agentes vivos</span><span class="val">${agents}</span></div>
     <div class="kpi ${tinte(lat, 'hot')}"><span class="lab">Laterales</span><span class="val tnum">${lat}</span></div>
@@ -121,7 +130,7 @@ function render() {
     ${olvidada ? `<div class="kpi warn"><span class="lab">Más olvidada</span><span class="val" style="font-size:13px">${esc((olvidada.alias || olvidada.project).slice(0, 16))} · ${ago(olvidada.idle)}</span></div>` : ''}`;
 
   pintarFavicon(waiting ? ICONO.espera
-    : (working || conAgentes) ? ICONO.activa
+    : (working || conAgentes || enFondo) ? ICONO.activa
     : ICONO.vacia);
 
   if (openId) {
@@ -148,6 +157,7 @@ function renderFleet(list) {
   Pulpos.sync(list.filter((s) => s.status !== 'closed' || s.id === openId), state.now, state.enlaces);
   pintarEnlaces(state.enlaces || []);
   const agentesVivos = list.reduce((n, s) => n + s.agents.filter((a) => !a.retired).length, 0);
+  const procesos = list.reduce((n, s) => n + (s.bg || []).filter((p) => p.pendiente).length, 0);
   // el mapa es el presente: las cerradas no lo ensucian, viven en su cajón
   const cerradas = list.filter((s) => s.status === 'closed');
   $('b-cerradas').hidden = !cerradas.length;
@@ -157,6 +167,7 @@ function renderFleet(list) {
   if (verCerradas && cerradas.length) pintarCerradas(cerradas);
 
   $('mapanote').textContent = `${list.length - cerradas.length} sesiones abiertas · ${agentesVivos} agentes`
+    + (procesos ? ` · ${procesos} en segundo plano` : '')
     + ` · arrastra para colocar · clic en una cabeza para entrar`;
   if (!list.length) {
     $('mapanote').textContent = 'ninguna sesión de Claude Code abierta ahora mismo';
@@ -232,7 +243,7 @@ function renderDetail(s) {
     $('mapaPanel').classList.add('enfocado');
     setTimeout(() => Pulpos.medir(), 330);
   }
-  $('dtitle').innerHTML = `${s.alias ? esc(s.alias) + ' · ' : ''}${s.project} <span class="note">${s.cwd} · ${ESTADO[s.status]}${s.status === 'waiting' ? ' desde hace ' + ago(s.idle) : ''}</span>`;
+  $('dtitle').innerHTML = `${s.alias ? esc(s.alias) + ' · ' : ''}${s.project} <span class="note">${s.cwd} · ${estadoDe(s)}${s.status === 'waiting' ? ' desde hace ' + ago(s.idle) : ''}</span>`;
 
   /* Los paneles de abajo pasan a hablar de ESTE proyecto. Se piden una sola vez por
      sesión abierta (el servidor además cachea 60 s), no en cada repintado: `renderDetail`
@@ -256,7 +267,9 @@ function renderDetail(s) {
   const muertos = s.agents.filter((a) => a.retired);
   // el mismo lienzo de siempre, enfocado en esta sesión: nada de un grafo aparte
   if (Pulpos.replayEstado()) return;   // en replay manda el transcript, no el vivo
-  $('mapanote').textContent = `${s.project} · ${vivos.length} agentes vivos · ${muertos.length} retirados`;
+  const enMarcha = (s.bg || []).filter((p) => p.pendiente).length;
+  $('mapanote').textContent = `${s.project} · ${vivos.length} agentes vivos · ${muertos.length} retirados`
+    + (enMarcha ? ` · ${enMarcha} en segundo plano` : '');
   $('b-replay').hidden = false;
   Pulpos.sync(state.sessions, state.now, state.enlaces);
 

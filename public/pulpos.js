@@ -25,9 +25,19 @@ const Pulpos = (() => {
     especialista: { forma:'rombo',   color:'#00c2b8', txt:'especialista (SEAT)' },
     explorador:   { forma:'tri',     color:'#6fb1ff', txt:'explorador / plan' },
     trabajo:      { forma:'circulo', color:null,      txt:'agente de trabajo' },
+    /* IMPACT-OK: familia nueva para los procesos en segundo plano (Bash y Monitor), que
+       llegan en el campo nuevo `bg` del snapshot. Viven en el mismo mapa `agentes` con la
+       marca `bg`, así que heredan física, tentáculo y ficha; lo que cambia es la forma, el
+       glifo y que no cuentan como agentes en la cabecera de la zona. Único consumidor de
+       este fichero: `app.js`. Sin producción implicada: panel local de solo lectura. */
+    proceso:      { forma:'cuadro',  color:'#94A3B8', txt:'proceso en segundo plano' },
   };
   const WORKING = 45;
   const ESTADO = { working:'trabajando', agents:'agentes al lío', waiting:'te espera', closed:'cerrada' };
+  /* `agents` es "el líder callado y alguien suyo trabajando". Si ese alguien es solo un
+     proceso en segundo plano, decir "agentes" sería mentir: no hay ninguno. */
+  const estadoTxt = (L) => (L.estado === 'agents' && L.bgVivos && !L.agVivos ? 'en segundo plano' : ESTADO[L.estado] || '');
+  const BG_ESTADO = { completed:'terminó', failed:'falló', killed:'parado', stopped:'parado' };
   const rato = (s) => {
     if (s == null || s < 0) return '';
     if (s < 60) return Math.round(s) + ' s';
@@ -63,7 +73,8 @@ const Pulpos = (() => {
   }
   /** Iniciales que distinguen: se tiran las palabras que comparte con sus hermanos. */
   function recalcIniciales(leadId){
-    const suyos = [...agentes.values()].filter(a => a.leadId === leadId);
+    // un proceso lleva su glifo fijo y no entra en el juego de las iniciales
+    const suyos = [...agentes.values()].filter(a => a.leadId === leadId && !a.bg);
     const trocear = (n) => String(n).split(/[\s\-_:]+|(?=[A-Z][a-z])/).filter(Boolean).map(p => p.toLowerCase());
     const cuenta = {};
     for (const a of suyos) for (const p of new Set(trocear(a.etiqueta))) cuenta[p] = (cuenta[p]||0)+1;
@@ -268,6 +279,31 @@ const Pulpos = (() => {
         A.accion = `${a.tool || ''} ${a.action || ''}`.trim();
         A.vivo = (now - a.last) < WORKING;
       }
+      L.agVivos = s.agents.filter(a => !a.retired && (now - a.last) < WORKING).length;
+
+      /* Los procesos en segundo plano, como satélites de su cabeza. Late el que sigue
+         pendiente; lo que terminó se queda apagado un rato con cómo acabó. */
+      L.bgVivos = 0;
+      for (const p of (s.bg || [])){
+        const k = s.id + '|bg:' + p.id;
+        suyosAhora.add(k);
+        let A = agentes.get(k);
+        if (!A){
+          const ang = Math.random() * Math.PI * 2, d = 62 + Math.random()*38;
+          A = { k, leadId:s.id, fam:'proceso', bg:true, color: FAM.proceso.color,
+                x: L.x + Math.cos(ang)*d, y: L.y + Math.sin(ang)*d,
+                vx:0, vy:0, r: foco ? 14 : 10.5, fase: Math.random()*6.28,
+                ini: p.tipo === 'Monitor' ? '◎' : '$' };
+          agentes.set(k, A);
+        }
+        if (p.pendiente) L.bgVivos++;
+        A.etiqueta = p.desc || p.id; A.tipo = p.tipo;
+        A.vivo = !!p.pendiente; A.retirado = !p.pendiente;
+        A.fallo = p.estado === 'failed';
+        A.desde = p.lanzado; A.fin = p.fin; A.vence = p.vence; A.quien = p.quien;
+        A.accion = p.pendiente ? 'en marcha'
+          : p.fin ? (BG_ESTADO[p.estado] || p.estado) : 'sin noticias';
+      }
       for (const [k, a] of agentes) if (a.leadId === s.id && !suyosAhora.has(k)) agentes.delete(k);
 
       // mensajes nuevos desde el último refresco -> partículas
@@ -471,6 +507,7 @@ const Pulpos = (() => {
     if (f === 'circulo'){ ctx.arc(x,y,r,0,6.29); return; }
     if (f === 'rombo'){ ctx.moveTo(x,y-r*1.18); ctx.lineTo(x+r*1.18,y); ctx.lineTo(x,y+r*1.18); ctx.lineTo(x-r*1.18,y); ctx.closePath(); return; }
     if (f === 'tri'){ const R=r*1.28; ctx.moveTo(x,y-R); ctx.lineTo(x+R*0.87,y+R*0.5); ctx.lineTo(x-R*0.87,y+R*0.5); ctx.closePath(); return; }
+    if (f === 'cuadro'){ ctx.roundRect(x-r, y-r, r*2, r*2, r*0.35); return; }
     for (let i=0;i<6;i++){ const a=Math.PI/6+i*Math.PI/3, px=x+Math.cos(a)*r*1.12, py=y+Math.sin(a)*r*1.12; i?ctx.lineTo(px,py):ctx.moveTo(px,py); }
     ctx.closePath();
   }
@@ -527,11 +564,14 @@ const Pulpos = (() => {
       const suyasZona = listaL.filter(l => l.repo === z.nombre);
       const abiertas = suyasZona.filter(l => l.estado !== 'closed').length;
       const cerradas = suyasZona.length - abiertas;
-      const vivos = listaA.filter(a => leads.get(a.leadId)?.repo === z.nombre && !a.retirado).length;
+      const enZona = listaA.filter(a => leads.get(a.leadId)?.repo === z.nombre && !a.retirado);
+      const vivos = enZona.filter(a => !a.bg).length;
+      const fondo2 = enZona.length - vivos;
       const partesCab = [];
       if (abiertas) partesCab.push(`${abiertas} ${abiertas === 1 ? 'sesión' : 'sesiones'}`);
       if (cerradas) partesCab.push(`${cerradas} cerrada${cerradas > 1 ? 's' : ''}`);
       if (vivos) partesCab.push(`${vivos} agentes`);
+      if (fondo2) partesCab.push(`${fondo2} en segundo plano`);
       ctx.fillStyle = '#5a5666'; ctx.font = '10px ui-monospace,monospace'; ctx.textAlign = 'right';
       ctx.fillText(partesCab.join(' · ') || 'sin sesiones', x+an-13, y+19);
 
@@ -639,7 +679,8 @@ const Pulpos = (() => {
       if (a.vivo && !a.retirado){ forma(a.x,a.y,a.r*pulso+7,f); ctx.fillStyle = a.color+'18'; ctx.fill(); }
       forma(a.x,a.y,a.r*pulso,f);
       ctx.fillStyle = a.retirado ? '#191920' : '#1c1c23'; ctx.fill();
-      ctx.strokeStyle = a.retirado ? '#2b2b34' : a.color; ctx.lineWidth = 1.5; ctx.stroke();
+      // un proceso que falló se queda con el borde en rojo: es lo que hay que ir a mirar
+      ctx.strokeStyle = a.fallo ? '#f97362' : a.retirado ? '#2b2b34' : a.color; ctx.lineWidth = 1.5; ctx.stroke();
       ctx.fillStyle = a.retirado ? '#4c4956' : a.color;
       ctx.font = '700 8.5px ui-monospace,monospace'; ctx.textAlign = 'center';
       ctx.fillText(a.ini, a.x, a.y + (f==='tri'?6:3));
@@ -718,7 +759,7 @@ const Pulpos = (() => {
       ctx.fillText('LEAD', L.x, L.y+3);
       // debajo va lo que de verdad importa de un vistazo: el estado y cuánto
       // lleva así. El id, más pequeño y en gris, por si hace falta buscarla
-      let est = ESTADO[L.estado] || '';
+      let est = estadoTxt(L);
       if (L.estado === 'waiting') est += ' · ' + rato(L.idle);
       else if (L.estado === 'agents') est += ' · líder ' + rato(L.idleLider);
       // con fondo: si no, los tentáculos de los vecinos las cruzan y no se leen
@@ -868,8 +909,9 @@ const Pulpos = (() => {
            ${hover.doc ? `<span style="color:var(--txt-2)">${hover.doc.semaforo} ${hover.doc.texto}</span><br>` : ''}
            ${hover.colgando ? `<span class="l">tareas sin cerrar</span> <span style="color:#c084fc">${hover.colgando}</span><br>` : ''}
            <span class="l">sesión</span> ${hover.id.slice(0,8)} · ${hover.rama || 'sin rama'}${hover.equipo ? ' · equipo' : ''}<br>
-           <span class="l">estado</span> <span style="color:${COL[hover.estado]}">${ESTADO[hover.estado]}</span>
+           <span class="l">estado</span> <span style="color:${COL[hover.estado]}">${estadoTxt(hover)}</span>
              ${hover.estado === 'waiting' ? 'desde hace ' + rato(hover.idle) : ''}<br>
+           ${hover.bgVivos ? `<span class="l">en segundo plano</span> ${hover.bgVivos}<br>` : ''}
            <span class="l">viva desde hace</span> ${rato((Date.now()/1000) - hover.desde)}<br>
            <span class="l">dónde lo dejaste</span><br>${(hover.accion||'-').slice(0,70)}<br>
            ${hover.git && (hover.git.sucios || hover.git.sinSubir)
@@ -879,6 +921,14 @@ const Pulpos = (() => {
            <span class="l">al líder</span> ${hover.up||0} ·
            <span class="l" style="color:${hover.lat ? '#ff9ec9' : ''}">laterales</span> ${hover.lat||0}<br>
            <span class="l" style="color:var(--accent-soft)">clic para ver el detalle</span>`
+        : hover.bg
+        ? `<b>${String(hover.etiqueta).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`)}</b><br>
+           <span class="l">familia</span> <span style="color:${FAM.proceso.color}">${FAM.proceso.txt}</span><br>
+           <span class="l">tipo</span> ${hover.tipo}${hover.quien ? ' · lo lanzó ' + hover.quien : ''}<br>
+           <span class="l">estado</span> <span style="color:${hover.fallo ? '#f97362' : hover.vivo ? '#00E68C' : 'inherit'}">${hover.accion}</span>
+             ${hover.fin ? 'tras ' + rato(hover.fin - hover.desde) : 'desde hace ' + rato(ahoraSeg() - hover.desde)}<br>
+           ${hover.vivo && hover.vence ? `<span class="l">caduca en</span> ${rato(hover.vence - ahoraSeg())}<br>` : ''}
+           ${hover.vivo ? '<span class="l">mientras siga, la sesión no te espera: vuelve sola al acabar</span>' : ''}`
         : `<b>${hover.etiqueta}</b><br>
            <span class="l">familia</span> <span style="color:${FAM[hover.fam].color||'#7ee787'}">${FAM[hover.fam].txt}</span><br>
            ${hover.tipo ? `<span class="l">tipo</span> ${hover.tipo}<br>` : ''}

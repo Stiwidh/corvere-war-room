@@ -310,6 +310,32 @@ const WORKING_S = 45;          // sin escribir más de esto ya no está "trabaja
 const MSG_KEEP = 40;
 const ACT_KEEP = 18;
 
+/*
+ * PROCESOS EN SEGUNDO PLANO: un Bash con `run_in_background`, el que pasa de 120 s y se va
+ * solo al fondo, y un Monitor. No son agentes (no tienen transcript propio), así que el
+ * panel no los veía, y mientras corrían la sesión salía como "te espera" aunque fuera a
+ * volver sola en cuanto acabaran.
+ *
+ * IMPACT-OK: estado nuevo y aditivo. Mapeado a mano (el grafo no indexa este repo): el
+ * snapshot gana un campo `bg` por sesión y no cambia ni renombra ninguno. `status` sigue
+ * teniendo los cuatro valores de siempre: un proceso pendiente pone la sesión en `agents`
+ * (el líder callado y alguien suyo trabajando), que es lo que ya leen como "activa" los
+ * hooks `warroom_pulso` y `warroom_briefing`; `warroom_bitacora` y
+ * `warroom_collision_guardian` no miran el estado. En `public/` lo pintan `pulpos.js` y
+ * `app.js`. Sin producción implicada: panel local de solo lectura.
+ *
+ * Los plazos están medidos el 2026-10-15 sobre todos los transcripts de la máquina: de
+ * 876 Bash en segundo plano con aviso de cierre, la mediana tardó 3 min, el p90 26 min y
+ * 54 pasaron de una hora, con una cola que llega a 3,8 días. Un Monitor dice él mismo
+ * cuándo caduca, y se usa eso. Sin aviso de cierre (la sesión se reinició, o es un
+ * servidor que no termina) un proceso deja de contar como trabajo pasada `BG_TOPE`, pero
+ * se sigue pintando apagado hasta `BG_OLVIDO`.
+ */
+const BG_TOPE = 60 * 60;
+const BG_RECUERDO = 10 * 60;   // lo que ya terminó se sigue viendo un rato
+const BG_OLVIDO = 6 * 3600;
+const BG_KEEP = 12;
+
 const PAL = ['#9810FA', '#E60076', '#00E68C', '#FFB547', '#6fb1ff',
              '#c084fc', '#ff9ec9', '#00c2b8', '#f97362', '#8b8ef7'];
 
@@ -760,7 +786,43 @@ function blankSession(id, cwd, branch) {
     lead: { last: '', lastAt: 0, tool: '', acts: 0, toks: 0, recent: [] },
     // turnos: cuándo le pediste algo, cuándo te devolvió la palabra y lo último que dijo
     inicioTurno: 0, ultimoHumano: 0, finTurno: null, ultimoDicho: '',
+    // procesos en segundo plano por tool_use_id, y las llamadas que aún no han contestado
+    bg: new Map(), bgLanzando: new Map(),
   };
+}
+
+/** "20m", "21m 40s", "1h 5m": la caducidad que anuncia un Monitor, en segundos. */
+function duracionTexto(txt) {
+  let seg = 0;
+  for (const [, n, u] of String(txt || '').matchAll(/(\d+)\s*(h|m|s)\b/g)) {
+    seg += Number(n) * (u === 'h' ? 3600 : u === 'm' ? 60 : 1);
+  }
+  return seg;
+}
+
+/**
+ * El aviso de cierre de un proceso en segundo plano. Llega por tres caminos según lo que
+ * estuviera haciendo la sesión (en la cola, como adjunto a mitad de turno o como turno
+ * propio), y muchas veces por dos o tres a la vez: cerrar es idempotente y vale el primero.
+ * Los eventos intermedios de un Monitor no traen `<status>` ni `<tool-use-id>`: solo dicen
+ * que sigue vivo.
+ */
+function avisoDeProceso(s, t, txt) {
+  for (const [, n] of txt.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)) {
+    const tid = /<task-id>([^<]+)<\/task-id>/.exec(n)?.[1];
+    const uid = /<tool-use-id>([^<]+)<\/tool-use-id>/.exec(n)?.[1];
+    const st = /<status>([^<]+)<\/status>/.exec(n)?.[1];
+    const p = (uid && s.bg.get(uid)) || [...s.bg.values()].find((x) => x.id === tid);
+    if (!p) continue;   // lanzado antes de la cola que hemos leído, o un agente
+    if (!st || st === 'running') { p.evento = Math.max(p.evento || 0, t); continue; }
+    if (!p.fin || t < p.fin) { p.fin = t; p.estado = st; }
+  }
+}
+
+/** Sigue en marcha y cuenta como trabajo: sin cierre y dentro de su plazo. */
+function bgPendiente(p, ahora) {
+  if (p.fin) return false;
+  return p.vence ? ahora < p.vence + 60 : ahora - p.lanzado < BG_TOPE;
 }
 
 function agentOf(s, name) {
@@ -881,6 +943,12 @@ function ingest(s, who, o) {
     }
   }
 
+  // el cierre de un proceso en segundo plano: cola, adjunto o turno propio
+  const aviso = o.type === 'queue-operation' ? o.content
+    : o.type === 'attachment' ? o.attachment?.prompt
+    : o.type === 'user' && typeof content === 'string' ? content : '';
+  if (typeof aviso === 'string' && aviso.includes('<task-notification>')) avisoDeProceso(s, t, aviso);
+
   if (!Array.isArray(content)) return;
 
   /* El acuse del envío llega en la línea siguiente, como resultado de la herramienta:
@@ -888,6 +956,27 @@ function ingest(s, who, o) {
      el mensaje se perdió sin más. Un envío fallido es justo lo que hay que ver. */
   for (const b of content) {
     if (!b || b.type !== 'tool_result') continue;
+    /* ¿Se fue al fondo? Lo dice el resultado, no la llamada: un Bash sin
+       `run_in_background` también acaba ahí si pasa de 120 s, o si llega un mensaje
+       mientras corre. La marca va ANCLADA al principio: medido el 2026-10-15, los 1.242
+       lanzamientos reales empiezan por ella, y suelta en cualquier sitio cazaba un `grep`
+       en primer plano cuya salida citaba un lanzamiento (y lo dejaba una hora "en marcha"). */
+    const lz = s.bgLanzando.get(b.tool_use_id);
+    if (lz) {
+      s.bgLanzando.delete(b.tool_use_id);
+      const r = typeof b.content === 'string' ? b.content
+        : Array.isArray(b.content) ? b.content.map((x) => x?.text || '').join(' ') : '';
+      const m = /^(?:Command\b.{0,80}?(?:in background with ID: |moved to the background \(ID: )|Monitor started \(task )([a-z0-9]+)/
+        .exec(r.trimStart().slice(0, 400));
+      if (m) {
+        const exp = /expires in ([^;)]*?) unless/.exec(r)?.[1];
+        const ms = /, timeout (\d+)ms/.exec(r)?.[1];
+        const dura = exp ? duracionTexto(exp) : ms ? Number(ms) / 1000 : 0;
+        s.bg.set(b.tool_use_id, { id: m[1], tipo: lz.tipo, desc: lz.desc, quien: lz.quien,
+                                  lanzado: lz.t, vence: dura ? lz.t + dura : 0,
+                                  fin: 0, estado: '', evento: 0 });
+      }
+    }
     const pend = cruceEsperando.get(b.tool_use_id);
     if (!pend) continue;
     cruceEsperando.delete(b.tool_use_id);
@@ -989,6 +1078,13 @@ function ingest(s, who, o) {
         s.escritos.set(fp, { t, quien: who || 'hilo principal' });
         if (s.escritos.size > 400) s.escritos.delete(s.escritos.keys().next().value);
       }
+    }
+
+    // todo Bash y todo Monitor pueden acabar en segundo plano: se apuntan hasta su resultado
+    if ((b.name === 'Bash' || b.name === 'Monitor') && b.id) {
+      s.bgLanzando.set(b.id, { t, tipo: b.name, quien: who || '',
+        desc: String(b.input?.description || detail('Bash', b.input)).slice(0, 80) });
+      if (s.bgLanzando.size > 50) s.bgLanzando.delete(s.bgLanzando.keys().next().value);
     }
 
     const d = detail(b.name, b.input);
@@ -1190,10 +1286,18 @@ async function scan() {
        Lo que sí acota es `MAX_AGE_H`, la ventana general. */
     const podemosDescartar = HAY_PROC || (!!cli && !appViva);
 
+    // lo que se apagó del todo sale de memoria; lo demás se queda para pintarlo
+    for (const [k, p] of s.bg) {
+      if (p.fin ? ahora - p.fin > BG_RECUERDO : ahora - p.lanzado > BG_OLVIDO) s.bg.delete(k);
+    }
+    /* Un proceso pendiente es trabajo aunque nadie escriba: cuando acabe, la sesión
+       vuelve sola. Antes salía "te espera" con dos descargas corriendo. */
+    const bgVivos = [...s.bg.values()].filter((p) => bgPendiente(p, ahora)).length;
+
     if (!abierta && podemosDescartar) s.status = 'closed';
     else if (idleLider < WORKING_S) s.status = 'working';
     // el líder callado pero los agentes vivos: tú estás libre, no te reclama
-    else if (actAgentes && idleAgentes < WORKING_S) s.status = 'agents';
+    else if ((actAgentes && idleAgentes < WORKING_S) || bgVivos) s.status = 'agents';
     else s.status = 'waiting';
     s.idle = idle;
     s.idleLider = idleLider;
@@ -1973,6 +2077,13 @@ function snapshot() {
         msgs: a.msgs, action: a.action, tool: a.tool, color: a.color, dice: a.dice || '',
         retired: a.retired, recent: a.recent.slice(0, ACT_KEEP),
       })),
+      // `pendiente` es lo que cuenta como trabajo; con la sesión cerrada ya no corre nada
+      bg: [...s.bg.values()]
+        .sort((a, b) => b.lanzado - a.lanzado).slice(0, BG_KEEP)
+        .map((p) => ({ id: p.id, tipo: p.tipo, desc: p.desc, quien: p.quien,
+                       lanzado: p.lanzado, vence: p.vence, fin: p.fin, estado: p.estado,
+                       evento: p.evento,
+                       pendiente: s.status !== 'closed' && bgPendiente(p, now()) })),
     }));
   return { now: now(), error: fleetError,
            aviso: avisoFuentes?.largo || null, avisoCorto: avisoFuentes?.corto || null,
